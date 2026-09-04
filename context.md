@@ -1,7 +1,7 @@
-Last Updated: 2026-09-04 (Milestone 6 complete - full plan fidelity pass done)
+Last Updated: 2026-09-04 (Milestone 7 complete - project done, ready for judges)
 Project / Competition: Razorpay Track 03 — AI Revenue Recovery
-Current Milestone: Milestone 7 (Polish & demo rehearsal)
-Current Task: dashboard/app.py is built and tested. Next: run through Milestone 7 checklist.
+Current Milestone: Complete. All 7 milestones done, ready for judges.
+Current Task: none — see section 16 for what the final hardening pass found and fixed.
 Generator seed: 30 (see data/generate_batch.py for why)
 
 ---
@@ -65,7 +65,7 @@ See `implementation_plan.md` at the project root for the full detailed plan.
 | Milestone 4 | Policy Engine, Intervention Selection & Execution | ✅ Done |
 | Milestone 5 | Audit Trail & Recovery Attribution, API Endpoints | ✅ Done |
 | Milestone 6 | Streamlit Dashboard (5 pages) | ✅ Done |
-| Milestone 7 | Polish, Packaging & Verification | ⬜ Next |
+| Milestone 7 | Polish, Packaging & Verification | ✅ Done |
 
 ---
 
@@ -190,7 +190,7 @@ fails the build if any rule (other than the waived cooldown) stops firing.
 - [x] **Milestone 5:** Attribution logic + FastAPI endpoints
 - [x] **Milestones 1-5 verification pass** - see section 13 for what was found and fixed
 - [x] **Milestone 6:** Streamlit dashboard (5 pages) - `dashboard/app.py`, tested with streamlit.testing.v1.AppTest (all 5 pages, live-run button, regenerate button, case switching - zero exceptions)
-- [ ] **Milestone 7:** Polish, E2E test, demo runbook
+- [x] **Milestone 7:** Polish, E2E test, demo runbook - see section 16
 - [ ] **USER ACTION:** Add Razorpay test keys to `.env`
 - [ ] **USER ACTION:** Ensure Kilo Code proxy is running for live AI calls
 
@@ -382,3 +382,90 @@ Same `streamlit.testing.v1.AppTest` harness, extended:
   session_state bug above).
 - Restored canonical seed-30 data afterward and reran
   `tests/test_pipeline.py` / `tests/test_api.py` - unchanged, still passing.
+
+
+---
+
+## 16. Milestone 7 — Polish, Packaging & Verification (Complete)
+
+### `tests/test_e2e.py`
+New standalone acceptance test, distinct from `test_pipeline.py`. Regenerates
+the database from scratch and verifies, independently of whether the code
+happened to raise an exception:
+1. Every case reaches a terminal state.
+2. Every logged state transition is a legal edge in the state machine's
+   graph - checked against the audit trail itself.
+3. Every case has a creation event and a terminal event matching its status.
+4. recovered + escalated + stopped == total.
+5. Payment links are real Razorpay objects when configured, or honestly
+   labelled simulated links when not.
+6. Zero automated actions on fraud/disputed cases, zero comms to opted-out
+   customers, zero money attributed to non-recovered cases.
+7. Every plan-mandated edge case (below-minimum, opt-out, fraud, high-value,
+   disputed, network-error retry rate, retry-count cap) is provably handled.
+
+Run before any demo: `python -m tests.test_e2e`.
+
+### Two real bugs this test caught
+
+**`razorpay_client.is_configured()` accepted placeholder credentials as
+real.** `.env` still has `RAZORPAY_KEY_ID=rzp_test_XXXXXXXXXX` /
+`RAZORPAY_KEY_SECRET=XXXXXXXXXXXXXXXX` (never filled in), and the old check
+was just `bool(key and secret)` - true for any non-empty string. This meant
+every single action was making a real, always-failing HTTPS call to
+Razorpay's API before falling back to simulation - wasted the whole batch's
+runtime (2.9s -> 0.2s after the fix) and meant nothing was ever really
+tested against "not configured" behavior. Fixed: `is_configured()` now
+rejects the placeholder pattern (a run of the literal letter X).
+
+**The audit trail lied about smart retries.** `_execute_smart_retry()`'s
+actor/reasoning checked the static `_razorpay_available` flag (set once at
+import time) instead of whether the actual API call succeeded. Every failed
+real attempt still logged "Real Razorpay order created." - a dishonest audit
+trail entry, which is a direct hit on criterion (4). Fixed to check the
+actual response; `_execute_payment_link()` already did this correctly and
+was the template for the fix.
+
+**Also found:** `data/seed_historical.py`'s "opted out" template listed a
+`smart_retry` action even though opting out should mean zero actions were
+ever attempted - a data-authoring contradiction the E2E test's "zero comms
+to opted-out customers" check caught immediately. Fixed to `actions: []`.
+
+**Also found (via the dashboard's new Razorpay/LLM status banner, built for
+this milestone):** `LLM_BASE_URL` in `.env` is still the literal
+`.env.example` placeholder `http://localhost:XXXX/v1` - a non-numeric port.
+`ai/llm.py`'s broad exception handling already made this harmless (every AI
+call has always silently used its deterministic fallback in this
+environment - confirmed by inspecting an actual dunning message in the DB),
+but the dashboard's new reachability probe initially crashed on the
+malformed URL (`urlparse().port` raises `ValueError` on a non-numeric port)
+until the probe's exception handling was broadened. No code in the actual
+pipeline needed to change - the AI/LLM path was already safe by design; this
+was purely about making the dashboard's own honesty-check robust.
+
+### Dashboard polish
+- Sidebar banner showing live Razorpay/LLM status, backed by real checks
+  (Razorpay: the fixed placeholder-aware `is_configured()`; LLM: an actual
+  TCP-connect probe, not just a non-empty-string check) - not just claimed.
+- Tooltips (`help=`) on every hero metric across Pages 1 and 5, explaining
+  exactly what each number means and how it's computed.
+- Page 3 payment links now carry a "Real Razorpay API" / "Simulated" badge,
+  sourced from the actual `payment_link_created` audit event rather than
+  assumed.
+- Page 1 shows a friendly first-run message instead of an all-zero dashboard
+  when the database is empty.
+
+### README.md
+Rewritten from a one-line placeholder into: project description, setup,
+run/test commands, a page-by-page dashboard guide, and a demo script timed
+against real measurements (regenerating the batch and running both live
+engine steps together takes under 2 seconds - measured via
+`streamlit.testing.v1.AppTest`, not estimated). The 5-7 minute pacing in the
+script is presenter narration time, stated as such, not padding to make the
+software look slower than it is.
+
+### Final verification
+All three suites green with canonical seed-30 numbers (`test_pipeline.py`,
+`test_e2e.py`, `test_api.py`), all 5 dashboard pages clean via
+`streamlit.testing.v1.AppTest`, zero occurrences of forbidden terminology
+anywhere in the tracked repo.
