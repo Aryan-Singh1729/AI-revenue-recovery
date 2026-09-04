@@ -78,27 +78,34 @@ def _execute_smart_retry(conn: sqlite3.Connection, case: dict) -> dict:
     amount_paise = case.get("amount_at_risk", 0)
     amount_rupees = amount_paise / 100
 
-    rzp_response = None
     action_success = True  # Action was dispatched (outcome determined separately)
+    real_order_created = False
 
     if _razorpay_available:
         try:
-            # Create a test-mode payment order to simulate a retry
-            order_result = razorpay_client.create_test_payment(
+            rzp_response = razorpay_client.create_test_payment(
                 amount_paise=amount_paise,
                 description=f"Smart retry for case {case_id}",
             )
-            rzp_response = order_result
+            real_order_created = bool(rzp_response.get("success"))
         except Exception as e:
-            rzp_response = {"error": str(e), "simulated": True}
+            rzp_response = {"success": False, "error": str(e), "raw_response": None}
     else:
+        rzp_response = None
+
+    # Fall back to a clearly-labelled simulated order whenever the real call
+    # wasn't attempted (not configured) or was attempted and failed (bad
+    # credentials, network error, etc.) — mirrors _execute_payment_link's
+    # fallback so both actions behave consistently either way.
+    if not real_order_created:
         rzp_response = {
+            **(rzp_response or {}),
             "simulated": True,
             "order_id": f"order_sim_{generate_id()}",
             "amount": amount_paise,
             "currency": "INR",
             "status": "created",
-            "note": "Razorpay not configured — simulated order",
+            "note": "Razorpay not configured or call failed — simulated order",
         }
 
     # Record action
@@ -128,18 +135,19 @@ def _execute_smart_retry(conn: sqlite3.Connection, case: dict) -> dict:
         conn=conn,
         case_id=case_id,
         event_type=AuditEventType.ACTION_EXECUTED,
-        actor=Actor.RAZORPAY if _razorpay_available else Actor.SYSTEM,
+        actor=Actor.RAZORPAY if real_order_created else Actor.SYSTEM,
         details={
             "action_type": ActionType.SMART_RETRY.value,
             "action_id": action_id,
             "amount_rupees": amount_rupees,
             "attempt_number": case.get("attempt_count", 0) + 1,
             "razorpay_response": rzp_response,
+            "is_real_order": real_order_created,
         },
         reasoning=(
             f"Smart retry #{case.get('attempt_count', 0) + 1} dispatched for "
             f"Rs {amount_rupees:,.0f}. "
-            f"{'Real Razorpay order created.' if _razorpay_available else 'Simulated order (Razorpay not configured).'}"
+            f"{'Real Razorpay order created.' if real_order_created else 'Simulated order (Razorpay not configured or call failed).'}"
         ),
     )
 

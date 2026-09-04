@@ -32,9 +32,34 @@ def get_client() -> razorpay.Client:
     return _client
 
 
+def _looks_like_placeholder(value: str) -> bool:
+    """
+    Detect the "rzp_test_XXXXXXXXXX" / "XXXXXXXXXXXXXXXX" style placeholder
+    values shipped in .env.example — a long run of the literal letter X is
+    not a pattern any real Razorpay key or secret can contain.
+    """
+    return "XXXXX" in value.upper()
+
+
 def is_configured() -> bool:
-    """Check if Razorpay keys are present (doesn't verify them)."""
-    return bool(config.RAZORPAY_KEY_ID and config.RAZORPAY_KEY_SECRET)
+    """
+    Check whether real Razorpay keys are present.
+
+    A bare non-empty check previously accepted the .env.example placeholder
+    strings as "configured", which made executor.py attempt a real API call
+    with garbage credentials on every action — a network round trip that was
+    always going to fail auth, before silently falling back to a simulated
+    response. That also produced a dishonest audit trail: the reasoning text
+    said "Real Razorpay order created" for a call that never succeeded (see
+    engine/executor.py's actor/reasoning logic, which was fixed alongside
+    this to check the actual response instead of this flag alone).
+    """
+    key, secret = config.RAZORPAY_KEY_ID, config.RAZORPAY_KEY_SECRET
+    if not key or not secret:
+        return False
+    if _looks_like_placeholder(key) or _looks_like_placeholder(secret):
+        return False
+    return True
 
 
 # ─── Payment Links ─────────────────────────────────────────────────────────────

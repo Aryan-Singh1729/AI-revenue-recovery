@@ -145,7 +145,11 @@ RESOLVED_CASES = [
      "triggered_rule": {"number": 4, "name": "Minimum Viable Amount", "threshold": "Rs 50",
                         "value": "Rs 35", "action": "STOP"}},
     {"root_cause": RootCause.BANK_DECLINE, "status": RecoveryStatus.STOPPED,
-     "plan": "Starter", "amount": 19900, "actions": ["smart_retry"],
+     # Opting out must mean zero automated actions were ever attempted — an
+     # earlier version of this template listed a smart_retry action here,
+     # which contradicted its own premise (caught by tests/test_e2e.py's
+     # "zero communications to opted-out customers" check).
+     "plan": "Starter", "amount": 19900, "actions": [],
      "days_ago": 4, "stop_reason": "Customer opted out of recovery communications",
      "triggered_rule": {"number": 6, "name": "Customer Opt-Out", "threshold": "Not opted out",
                         "value": "Opted out", "action": "STOP"}},
