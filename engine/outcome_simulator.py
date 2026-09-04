@@ -46,12 +46,18 @@ SUCCESS_RATES: dict[tuple[str, str], float] = {
 DEFAULT_SUCCESS_RATE = 0.15
 
 
-def _case_seed(case_id: str, attempt_index: int) -> float:
+def _case_seed(case_id: str, step_index: int) -> float:
     """
-    Generate a deterministic pseudo-random value [0, 1) from case ID + attempt.
-    Same case + same attempt → always the same random value.
+    Deterministic pseudo-random value in [0, 1) from case ID + sequence step.
+
+    `step_index` is the position in the case's intervention sequence (0, 1, 2...),
+    NOT the per-action-type repeat count. Seeding on the repeat count made every
+    action type in a sequence draw step 0, so a case's retry, payment link and
+    dunning message all shared one random value — a case that failed its retry
+    was mathematically guaranteed to fail the cheaper follow-ups too. Seeding on
+    the sequence position makes the attempts independent, as intended.
     """
-    seed_str = f"{case_id}:attempt:{attempt_index}"
+    seed_str = f"{case_id}:step:{step_index}"
     hash_bytes = hashlib.sha256(seed_str.encode()).hexdigest()
     # Take first 8 hex chars → convert to int → normalize to [0, 1)
     return int(hash_bytes[:8], 16) / 0xFFFFFFFF
@@ -62,6 +68,7 @@ def simulate_outcome(
     root_cause: str,
     action_type: str,
     attempt_index: int = 0,
+    step_index: int | None = None,
 ) -> dict:
     """
     Simulate the outcome of a recovery action.
@@ -70,7 +77,11 @@ def simulate_outcome(
         case_id: Unique case identifier (used as seed).
         root_cause: RootCause enum value.
         action_type: ActionType enum value.
-        attempt_index: Which attempt this is (0-based, for diminishing returns).
+        attempt_index: How many times THIS action type has already been tried on
+            this case (0-based). Drives diminishing returns only.
+        step_index: Position in the case's overall intervention sequence (0-based).
+            Drives the random seed so each step is an independent draw. Defaults
+            to attempt_index for backwards compatibility.
 
     Returns:
         {
@@ -80,6 +91,9 @@ def simulate_outcome(
             "reasoning": str
         }
     """
+    if step_index is None:
+        step_index = attempt_index
+
     # Get base probability
     key = (root_cause, action_type)
     base_rate = SUCCESS_RATES.get(key, DEFAULT_SUCCESS_RATE)
@@ -89,14 +103,14 @@ def simulate_outcome(
         base_rate *= 0.5 ** attempt_index
 
     # Generate deterministic random value
-    rand_value = _case_seed(case_id, attempt_index)
+    rand_value = _case_seed(case_id, step_index)
 
     # Determine outcome
     success = rand_value < base_rate
 
     reasoning = (
         f"Outcome simulation: {action_type} for {root_cause} "
-        f"(attempt #{attempt_index + 1}). "
+        f"(sequence step {step_index + 1}, attempt #{attempt_index + 1} of this type). "
         f"Base rate: {base_rate * 100:.0f}%, "
         f"seed value: {rand_value:.4f} "
         f"→ {'SUCCESS' if success else 'FAILURE'}"
