@@ -18,7 +18,7 @@ import json
 import random
 from datetime import datetime, timedelta
 from database.db import (
-    get_connection, init_db, generate_id,
+    get_connection, init_db,
     insert_customer, insert_subscription, insert_recovery_case,
     insert_action, insert_audit_entry,
 )
@@ -29,6 +29,16 @@ from models.enums import (
 
 SEED = 99
 rng = random.Random(SEED)
+
+
+def generate_id(prefix: str = "") -> str:
+    """
+    Seeded ID generator, shadowing database.db.generate_id on purpose.
+
+    Historical IDs must be stable across regenerations so that case links in a
+    rehearsed demo keep working and the dashboard shows the same cases every run.
+    """
+    return f"{prefix}{rng.getrandbits(32):08x}"
 
 # ─── Historical Case Templates ────────────────────────────────────────────────
 
@@ -86,10 +96,14 @@ RESOLVED_CASES = [
     # ─── 8 ESCALATED ──────────────────────────────────────────────────
     {"root_cause": RootCause.FRAUD_FLAG, "status": RecoveryStatus.ESCALATED,
      "plan": "Business", "amount": 299900, "actions": ["escalation"],
-     "days_ago": 26, "escalation_reason": "Fraud flagged — policy blocks autonomous recovery"},
+     "days_ago": 26, "escalation_reason": "Fraud flagged — policy blocks autonomous recovery",
+     "triggered_rule": {"number": 8, "name": "Fraud Block", "threshold": "No fraud flag",
+                        "value": "Root cause: fraud_flag", "action": "ESCALATE"}},
     {"root_cause": RootCause.FRAUD_FLAG, "status": RecoveryStatus.ESCALATED,
      "plan": "Enterprise", "amount": 999900, "actions": ["escalation"],
-     "days_ago": 19, "escalation_reason": "Fraud flagged — immediate escalation required"},
+     "days_ago": 19, "escalation_reason": "Fraud flagged — immediate escalation required",
+     "triggered_rule": {"number": 8, "name": "Fraud Block", "threshold": "No fraud flag",
+                        "value": "Root cause: fraud_flag", "action": "ESCALATE"}},
     {"root_cause": RootCause.ACCOUNT_CLOSED, "status": RecoveryStatus.ESCALATED,
      "plan": "Pro", "amount": 99900, "actions": ["escalation"],
      "days_ago": 23, "escalation_reason": "Bank account closed — cannot retry"},
@@ -100,11 +114,16 @@ RESOLVED_CASES = [
      "plan": "Starter", "amount": 19900, "actions": ["escalation"],
      "days_ago": 11, "escalation_reason": "Bank account closed — no viable recovery path"},
     {"root_cause": RootCause.INSUFFICIENT_FUNDS, "status": RecoveryStatus.ESCALATED,
-     "plan": "Premium", "amount": 2499900, "actions": ["smart_retry", "payment_link", "dunning_message", "escalation"],
-     "days_ago": 9, "escalation_reason": "High-value subscription (₹24,999) — all interventions exhausted, needs merchant attention"},
+     "plan": "Premium", "amount": 2999900, "actions": ["escalation"],
+     "days_ago": 9, "escalation_reason": "Policy rule #10 (High-Value Review): Rs 29,999 exceeds Below Rs 25,000",
+     "triggered_rule": {"number": 10, "name": "High-Value Review",
+                        "threshold": "Below Rs 25,000", "value": "Rs 29,999",
+                        "action": "ESCALATE"}},
     {"root_cause": RootCause.BANK_DECLINE, "status": RecoveryStatus.ESCALATED,
      "plan": "Business", "amount": 299900, "actions": ["smart_retry", "smart_retry", "smart_retry", "escalation"],
-     "days_ago": 6, "escalation_reason": "Max retry attempts (3/3) exhausted — persistent bank decline"},
+     "days_ago": 6, "escalation_reason": "Max retry attempts (3/3) exhausted — persistent bank decline",
+     "triggered_rule": {"number": 1, "name": "Max Retry Attempts", "threshold": "3 retries",
+                        "value": "3 retries done", "action": "STOP"}},
     {"root_cause": RootCause.EXPIRED_CARD, "status": RecoveryStatus.ESCALATED,
      "plan": "Enterprise", "amount": 999900, "actions": ["payment_link", "dunning_message", "escalation"],
      "days_ago": 3, "escalation_reason": "Customer did not respond to payment link or dunning — needs direct merchant outreach"},
@@ -112,19 +131,29 @@ RESOLVED_CASES = [
     # ─── 5 STOPPED ──────────────────────────────────────────────────
     {"root_cause": RootCause.DISPUTED, "status": RecoveryStatus.STOPPED,
      "plan": "Pro", "amount": 99900, "actions": [],
-     "days_ago": 24, "stop_reason": "Payment disputed — policy prohibits recovery"},
+     "days_ago": 24, "stop_reason": "Payment disputed — policy prohibits recovery",
+     "triggered_rule": {"number": 9, "name": "Dispute Block", "threshold": "No active dispute",
+                        "value": "Root cause: disputed", "action": "STOP"}},
     {"root_cause": RootCause.DISPUTED, "status": RecoveryStatus.STOPPED,
      "plan": "Basic", "amount": 49900, "actions": [],
-     "days_ago": 17, "stop_reason": "Payment disputed — must not attempt recovery"},
+     "days_ago": 17, "stop_reason": "Payment disputed — must not attempt recovery",
+     "triggered_rule": {"number": 9, "name": "Dispute Block", "threshold": "No active dispute",
+                        "value": "Root cause: disputed", "action": "STOP"}},
     {"root_cause": RootCause.INSUFFICIENT_FUNDS, "status": RecoveryStatus.STOPPED,
      "plan": "Micro", "amount": 3500, "actions": [],
-     "days_ago": 13, "stop_reason": "Amount ₹35 below minimum recovery threshold (₹50)"},
+     "days_ago": 13, "stop_reason": "Amount ₹35 below minimum recovery threshold (₹50)",
+     "triggered_rule": {"number": 4, "name": "Minimum Viable Amount", "threshold": "Rs 50",
+                        "value": "Rs 35", "action": "STOP"}},
     {"root_cause": RootCause.BANK_DECLINE, "status": RecoveryStatus.STOPPED,
      "plan": "Starter", "amount": 19900, "actions": ["smart_retry"],
-     "days_ago": 4, "stop_reason": "Customer opted out of recovery communications"},
+     "days_ago": 4, "stop_reason": "Customer opted out of recovery communications",
+     "triggered_rule": {"number": 6, "name": "Customer Opt-Out", "threshold": "Not opted out",
+                        "value": "Opted out", "action": "STOP"}},
     {"root_cause": RootCause.INSUFFICIENT_FUNDS, "status": RecoveryStatus.STOPPED,
      "plan": "Pro", "amount": 99900, "actions": ["smart_retry", "payment_link"],
-     "days_ago": 2, "stop_reason": "Recovery window exceeded (14 days) — stopping all recovery"},
+     "days_ago": 2, "stop_reason": "Recovery window exceeded (14 days) — stopping all recovery",
+     "triggered_rule": {"number": 3, "name": "Max Recovery Window", "threshold": "14 days",
+                        "value": "16 days elapsed", "action": "STOP"}},
 
     # ─── 5 UNRECOVERED (status = stopped, all interventions failed) ──
     # Note: We model unrecovered as a subtype of stopped with different stop_reason
@@ -159,6 +188,70 @@ ERROR_TEMPLATES = {
     RootCause.FRAUD_FLAG: ("BAD_REQUEST_ERROR", "suspected_fraud", "bank", "payment_authorization"),
     RootCause.DISPUTED: ("BAD_REQUEST_ERROR", "payment_disputed", "customer", "payment_capture"),
 }
+
+
+# The 10 rules in the same shape policy_engine.check_policy() writes them, so
+# database.db.get_policy_trigger_stats() can count live and historical
+# evaluations with one query.
+RULE_CATALOG = [
+    (1,  "Max Retry Attempts",    "3 retries",          "0 retries done",       "STOP"),
+    (2,  "Max Communications",    "2 messages",         "0 messages sent",      "STOP"),
+    (3,  "Max Recovery Window",   "14 days",            "within window",        "STOP"),
+    (4,  "Minimum Viable Amount", "Rs 50",              "above minimum",        "STOP"),
+    (5,  "Cost Ratio Limit",      "30% of amount",      "within budget",        "STOP"),
+    (6,  "Customer Opt-Out",      "Not opted out",      "Active",               "STOP"),
+    (7,  "Action Cooldown",       "24 hours",           "cooldown satisfied",   "WAIT"),
+    (8,  "Fraud Block",           "No fraud flag",      "no fraud flag",        "ESCALATE"),
+    (9,  "Dispute Block",         "No active dispute",  "no active dispute",    "STOP"),
+    (10, "High-Value Review",     "Below Rs 25,000",    "below threshold",      "ESCALATE"),
+]
+
+
+def _build_all_rules(triggered: dict | None) -> list[dict]:
+    """Render the 10-rule checklist, marking `triggered` (if any) as failed."""
+    rules = []
+    for number, name, threshold, ok_value, action in RULE_CATALOG:
+        failed = bool(triggered) and triggered["number"] == number
+        rules.append({
+            "rule_number": number,
+            "rule_name": name,
+            "threshold": triggered["threshold"] if failed else threshold,
+            "current_value": triggered["value"] if failed else ok_value,
+            "passed": not failed,
+            "action_if_failed": action,
+        })
+    return rules
+
+
+def _policy_details(template: dict, action: str, is_final: bool) -> dict:
+    """Details payload for a historical POLICY_EVALUATED audit entry."""
+    triggered = template.get("triggered_rule") if is_final else None
+    rules = _build_all_rules(triggered)
+    if triggered:
+        result = "escalate" if triggered["action"] == "ESCALATE" else "stop"
+    elif action == "escalation":
+        result = "escalate"
+    else:
+        result = "allowed"
+    return {
+        "proposed_action": action,
+        "result": result,
+        "triggered_rule": triggered["name"] if triggered else None,
+        "rules_passed": sum(1 for r in rules if r["passed"]),
+        "rules_total": len(rules),
+        "all_rules": rules,
+    }
+
+
+def _policy_reasoning(template: dict, action: str, is_final: bool) -> str:
+    triggered = template.get("triggered_rule") if is_final else None
+    if triggered:
+        return (f"Policy check for '{action}': {triggered['action'].lower()}. "
+                f"9/10 rules passed. Blocked by: Policy rule #{triggered['number']} "
+                f"({triggered['name']}): {triggered['value']} exceeds {triggered['threshold']}")
+    if action == "escalation":
+        return f"Policy check for 'escalation': escalate. 10/10 rules passed. All rules passed."
+    return f"Policy check for '{action}': allowed. 10/10 rules passed. All rules passed."
 
 
 def _build_audit_trail(case_id: str, template: dict, base_time: datetime) -> list[dict]:
@@ -224,12 +317,10 @@ def _build_audit_trail(case_id: str, template: dict, base_time: datetime) -> lis
             "timestamp": t.isoformat(),
             "event_type": AuditEventType.POLICY_EVALUATED.value,
             "actor": Actor.POLICY_ENGINE.value,
-            "details": json.dumps({
-                "result": "allowed" if action != "escalation" else "escalate",
-                "rules_checked": 10,
-                "all_passed": action != "escalation",
-            }),
-            "reasoning": f"Policy check: {'ALLOWED — all 10 rules pass' if action != 'escalation' else 'ESCALATE — autonomous recovery exhausted'}.",
+            "details": json.dumps(_policy_details(template, action, is_final=(
+                i == len(template.get("actions", [])) - 1))),
+            "reasoning": _policy_reasoning(template, action, is_final=(
+                i == len(template.get("actions", [])) - 1)),
         })
         t += timedelta(seconds=1)
 
@@ -252,6 +343,21 @@ def _build_audit_trail(case_id: str, template: dict, base_time: datetime) -> lis
         })
         t += timedelta(hours=rng.randint(1, 48))
 
+    # 3b. Cases blocked before any action ever ran (disputed, below-minimum,
+    #     opted-out) still get a full policy evaluation — that evaluation IS the
+    #     record of why nothing was attempted.
+    if template.get("triggered_rule") and not template.get("actions"):
+        entries.append({
+            "id": generate_id("AUD-"),
+            "case_id": case_id,
+            "timestamp": t.isoformat(),
+            "event_type": AuditEventType.POLICY_EVALUATED.value,
+            "actor": Actor.POLICY_ENGINE.value,
+            "details": json.dumps(_policy_details(template, "escalation", is_final=True)),
+            "reasoning": _policy_reasoning(template, "escalation", is_final=True),
+        })
+        t += timedelta(seconds=1)
+
     # 4. Terminal state
     if template["status"] == RecoveryStatus.RECOVERED:
         entries.append({
@@ -261,8 +367,12 @@ def _build_audit_trail(case_id: str, template: dict, base_time: datetime) -> lis
             "event_type": AuditEventType.CASE_RECOVERED.value,
             "actor": Actor.SYSTEM.value,
             "details": json.dumps({
-                "amount_recovered": template.get("recovered_amount", 0),
-                "actions_taken": len(template["actions"]),
+                # Key names must match engine/recovery_orchestrator.py so that
+                # attribution can group historical and live recoveries together.
+                "amount_recovered_paise": template.get("recovered_amount", 0),
+                "amount_recovered_rupees": template.get("recovered_amount", 0) / 100,
+                "recovery_action": (template["actions"] or ["smart_retry"])[-1],
+                "attempt_count": len(template["actions"]),
             }),
             "reasoning": f"₹{template.get('recovered_amount', 0) / 100:,.0f} recovered after {len(template['actions'])} action(s).",
         })
