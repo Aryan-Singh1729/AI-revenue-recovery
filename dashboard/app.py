@@ -26,7 +26,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+import socket
+from urllib.parse import urlparse
+
 import config
+import razorpay_client
 from database.db import (
     get_connection, get_all_cases, get_case_with_details, get_audit_trail,
     get_actions_for_case, get_policy_trigger_stats, get_escalated_cases,
@@ -241,6 +245,32 @@ def clear_cache():
     st.cache_data.clear()
 
 
+@st.cache_data(ttl=5)
+def check_llm_reachable() -> bool:
+    """
+    A quick TCP-connect probe to the LLM endpoint's host:port.
+
+    ai/llm.is_configured() only checks that LLM_BASE_URL/LLM_API_KEY are
+    non-empty strings — true even for the unreachable localhost placeholder
+    in .env.example, which would make the sidebar claim "AI: live" while
+    every actual call silently falls back to deterministic text. A real
+    connectivity probe (not a full chat completion — no cost, no auth) gives
+    an honest status instead.
+    """
+    try:
+        parsed = urlparse(config.LLM_BASE_URL)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        with socket.create_connection((host, port), timeout=0.3):
+            return True
+    except (OSError, ValueError):
+        # ValueError covers a malformed URL (e.g. LLM_BASE_URL still set to
+        # the .env.example placeholder "http://localhost:XXXX/v1" — a
+        # non-numeric port, which urlparse().port raises on). A broken
+        # config is just as "not reachable" as a refused connection.
+        return False
+
+
 def format_activity_line(ev: dict, case: dict | None) -> str:
     d = ev["details"]
     customer = (case or {}).get("customer_name", "a customer")
@@ -276,6 +306,17 @@ elif "nav_page" not in st.session_state:
 page = st.sidebar.radio("Navigate", PAGES, key="nav_page", label_visibility="collapsed")
 
 st.sidebar.divider()
+_razorpay_live = razorpay_client.is_configured()
+_llm_live = check_llm_reachable()
+st.sidebar.caption(
+    f"{'🟢' if _razorpay_live else '🧪'} Razorpay: "
+    f"{'live test-mode API' if _razorpay_live else 'not configured — actions simulated'}"
+)
+st.sidebar.caption(
+    f"{'🟢' if _llm_live else '🧪'} AI (LLM): "
+    f"{'live' if _llm_live else 'not reachable — deterministic fallback text'}"
+)
+st.sidebar.divider()
 summary_preview = load_summary()["summary"]
 st.sidebar.metric("Revenue Recovered", rupees(summary_preview["revenue_recovered_paise"]))
 st.sidebar.metric("Recovery Rate", f"{summary_preview['recovery_rate_percent']}%")
@@ -300,11 +341,28 @@ if page == PAGES[0]:
     m = load_summary()["summary"]
     df = load_all_cases()
 
+    if m["total_cases_tracked"] == 0:
+        st.info(
+            "No cases in the database yet. Go to **4 · Live Recovery Engine** and use "
+            "**Regenerate demo batch** to load the seeded 50 active + 30 historical cases."
+        )
+        st.stop()
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("💰 Revenue at Risk", rupees(m["revenue_at_risk_paise"]))
-    c2.metric("✅ Revenue Recovered", rupees(m["revenue_recovered_paise"]))
-    c3.metric("📈 Recovery Rate", f"{m['recovery_rate_percent']}%")
-    c4.metric("📊 Cases Processed", m["total_cases_tracked"])
+    c1.metric("💰 Revenue at Risk", rupees(m["revenue_at_risk_paise"]),
+              help="Sum of the failed billing cycle across every case in the batch — "
+                   "the money that was on the table before the agent did anything.")
+    c2.metric("✅ Revenue Recovered", rupees(m["revenue_recovered_paise"]),
+              help="Conservatively attributed: only counted when a payment actually succeeded "
+                   "after the agent's own retry, payment link, or dunning message. "
+                   "Escalated and stopped cases are never counted here, even if a merchant "
+                   "later recovers them manually.")
+    c3.metric("📈 Recovery Rate", f"{m['recovery_rate_percent']}%",
+              help="Revenue Recovered ÷ Revenue at Risk. Both sides use the same immediate-cycle "
+                   "amount — never mixed with the larger lifetime-risk figure below.")
+    c4.metric("📊 Cases Processed", m["total_cases_tracked"],
+              help="Every case in the batch that reached a terminal state — recovered, "
+                   "escalated, or stopped. None are left mid-pipeline.")
 
     st.caption(
         f"Lifetime revenue at risk (amount × remaining billing cycles): "
@@ -331,9 +389,18 @@ if page == PAGES[0]:
 
         r1, r2, r3, r4 = st.columns(4)
         r1.metric("🟢 Recovered", m["cases_recovered"], rupees(rec_amt))
-        r2.metric("🟠 Escalated", m["cases_escalated"], rupees(esc_amt) + " at risk")
-        r3.metric("🔴 Stopped", m["cases_stopped"], rupees(stp_amt) + " at risk")
-        r4.metric("⚪ Unrecovered (exhausted)", unrec_n, rupees(unrec_amt) + " at risk")
+        r2.metric("🟠 Escalated", m["cases_escalated"], rupees(esc_amt) + " at risk",
+                  help="Handed to a human with full context — fraud, disputes, high-value "
+                       "cases, or a root cause with no safe automated path. The agent knows "
+                       "its own limits.")
+        r3.metric("🔴 Stopped", m["cases_stopped"], rupees(stp_amt) + " at risk",
+                  help="A stopping rule fired: below the minimum recovery amount, an opted-out "
+                       "customer, a dispute, or the cost of continuing would exceed the value "
+                       "of the payment.")
+        r4.metric("⚪ Unrecovered (exhausted)", unrec_n, rupees(unrec_amt) + " at risk",
+                  help="Escalated, but only after every automated intervention in its sequence "
+                       "was tried and failed — distinct from an immediate escalation where no "
+                       "automated path ever existed.")
 
     st.divider()
 
@@ -582,7 +649,13 @@ elif page == PAGES[2]:
     h4.metric("Root Cause", root_cause_label(case.get("root_cause")))
 
     if case.get("razorpay_payment_link_url"):
-        st.markdown(f"🔗 Payment link: [{case['razorpay_payment_link_url']}]({case['razorpay_payment_link_url']})")
+        link_event = next((e for e in trail if e["event_type"] == "payment_link_created"), None)
+        is_real = bool(link_event and link_event["details"].get("is_real_link"))
+        badge_text = "✅ Real Razorpay API" if is_real else "🧪 Simulated (Razorpay not configured)"
+        st.markdown(
+            f"🔗 Payment link: [{case['razorpay_payment_link_url']}]({case['razorpay_payment_link_url']}) "
+            f"— {badge_text}"
+        )
 
     st.divider()
     st.subheader("Timeline")
@@ -938,7 +1011,10 @@ elif page == PAGES[4]:
         conn.close()
 
     s1, s2, s3, s4 = st.columns(4)
-    s1.metric("Policy Checks Run", total_checks)
+    s1.metric("Policy Checks Run", total_checks,
+              help="Every proposed action — retry, link, message, or escalation — is checked "
+                   "against all 10 rules before it's allowed to run. This is the count of "
+                   "those checks.")
     s2.metric("Actions Executed", total_nonesc_actions, help="Every one was preceded by a passing policy check.")
     s3.metric("Actions on Fraud Cases", fraud_actions, help="Must always be 0.")
     s4.metric("Comms to Opted-Out Customers", optout_comms, help="Must always be 0.")
