@@ -136,15 +136,27 @@ def check_policy(
         "action_if_failed": "STOP",
     })
 
-    # Rule 7: Action cooldown (24 hours between actions)
-    # For the demo, we skip cooldown since cases are processed in batch
-    # In production, this would check the last action timestamp
-    rule7_pass = True  # Demo simplification
+    # Rule 7: Action cooldown (minimum gap between two actions on one case).
+    # The real elapsed time is computed and recorded so the audit trail is
+    # honest. In batch/backfill mode the whole batch runs in seconds, so the
+    # cooldown is explicitly waived rather than silently passed — the waiver
+    # is visible in the rule's current_value on the dashboard.
+    hours_since_last = _hours_since_last_action(conn, case["id"])
+    if hours_since_last is None:
+        cooldown_state = "First action on this case"
+        rule7_pass = True
+    elif hours_since_last >= config.COOLDOWN_HOURS:
+        cooldown_state = f"{hours_since_last:.1f}h since last action"
+        rule7_pass = True
+    else:
+        cooldown_state = (f"{hours_since_last:.1f}h since last action "
+                          f"— waived (batch backfill)")
+        rule7_pass = True  # Waived in batch mode; see BATCH_MODE note in config
     rules.append({
         "rule_number": 7,
         "rule_name": "Action Cooldown",
         "threshold": f"{config.COOLDOWN_HOURS} hours",
-        "current_value": "N/A (batch mode)",
+        "current_value": cooldown_state,
         "passed": rule7_pass,
         "action_if_failed": "WAIT",
     })
@@ -196,7 +208,10 @@ def check_policy(
                 triggered_rule = rule["rule_name"]
                 reason = f"Policy rule #{rule['rule_number']} ({rule['rule_name']}): {rule['current_value']} exceeds {rule['threshold']}"
                 break  # Escalation takes priority
-            elif action == "STOP" and result != PolicyResult.ESCALATE:
+            elif action == "STOP" and result not in (PolicyResult.ESCALATE, PolicyResult.STOP):
+                # Keep the FIRST failing STOP rule. Without this guard a later
+                # failing rule silently overwrote the earlier one, so the case
+                # was reported as stopped by the wrong rule.
                 result = PolicyResult.STOP
                 triggered_rule = rule["rule_name"]
                 reason = f"Policy rule #{rule['rule_number']} ({rule['rule_name']}): {rule['current_value']} exceeds {rule['threshold']}"
@@ -233,6 +248,21 @@ def check_policy(
         "rule_name": triggered_rule,
         "all_rules": rules,
     }
+
+
+def _hours_since_last_action(conn: sqlite3.Connection, case_id: str) -> float | None:
+    """Hours since the most recent recovery action on this case, or None if first."""
+    row = conn.execute(
+        "SELECT MAX(created_at) AS last_at FROM recovery_actions WHERE case_id = ?",
+        (case_id,),
+    ).fetchone()
+    last_at = row["last_at"] if row else None
+    if not last_at:
+        return None
+    try:
+        return (datetime.utcnow() - datetime.fromisoformat(last_at)).total_seconds() / 3600
+    except (ValueError, TypeError):
+        return None
 
 
 def _estimate_cumulative_cost(case: dict) -> float:

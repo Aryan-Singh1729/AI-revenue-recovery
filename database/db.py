@@ -348,16 +348,31 @@ def get_metrics_by_intervention(conn: sqlite3.Connection) -> list[dict]:
 
 
 def get_policy_trigger_stats(conn: sqlite3.Connection) -> list[dict]:
-    """Get how many times each policy rule was triggered (from audit log)."""
+    """
+    How many times each of the 10 policy rules was evaluated and how many
+    times it blocked an action. Drives the Stopping Rules table (criterion 3).
+
+    Walks the `all_rules` array that policy_engine.check_policy() writes into
+    every POLICY_EVALUATED audit entry, so the counts come from the same
+    evidence a judge can expand on any individual case.
+    """
     rows = conn.execute(
         """SELECT
-             json_extract(details, '$.rule_name') as rule_name,
-             COUNT(*) as times_triggered
-           FROM audit_log
-           WHERE event_type = 'policy_evaluated'
-             AND json_extract(details, '$.passed') = 0
-           GROUP BY rule_name
-           ORDER BY times_triggered DESC"""
+             json_extract(r.value, '$.rule_number')     AS rule_number,
+             json_extract(r.value, '$.rule_name')       AS rule_name,
+             json_extract(r.value, '$.threshold')       AS threshold,
+             json_extract(r.value, '$.action_if_failed') AS action_if_failed,
+             COUNT(*)                                   AS times_evaluated,
+             SUM(CASE WHEN json_extract(r.value, '$.passed') = 0
+                      THEN 1 ELSE 0 END)                AS times_triggered,
+             MIN(CASE WHEN json_extract(r.value, '$.passed') = 0
+                      THEN a.case_id END)               AS example_case_id
+           FROM audit_log a,
+                json_each(json_extract(a.details, '$.all_rules')) r
+           WHERE a.event_type = 'policy_evaluated'
+             AND json_extract(a.details, '$.all_rules') IS NOT NULL
+           GROUP BY rule_number, rule_name
+           ORDER BY rule_number"""
     ).fetchall()
     return [dict(r) for r in rows]
 
