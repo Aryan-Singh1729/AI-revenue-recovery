@@ -197,11 +197,11 @@ stateDiagram-v2
 
 ---
 
-## Phase-wise Implementation Plan
+## Milestone-wise Implementation Plan
 
 ---
 
-### Phase 1 — Foundation: Database, Models, Config & Razorpay Client
+### Milestone 1 — Foundation: Database, Models, Config & Razorpay Client
 
 **Goal:** Set up the database schema, data models, configuration, Razorpay SDK connection, and LLM client. Verify Razorpay Payment Link creation works in test mode.
 
@@ -352,7 +352,7 @@ stateDiagram-v2
 
 ---
 
-### Phase 2 — Synthetic Data Generator
+### Milestone 2 — Synthetic Data Generator
 
 **Goal:** Generate a realistic batch of 50-80 failed subscription payment cases with varied failure types, amounts, and customer profiles — formatted to match real Razorpay error payloads.
 
@@ -436,7 +436,7 @@ stateDiagram-v2
 
 ---
 
-### Phase 3 — Detection & Root Cause Diagnosis Engine
+### Milestone 3 — Detection & Root Cause Diagnosis Engine
 
 **Goal:** Scan the database for unprocessed failed payments, classify each failure's root cause, and calculate revenue at risk.
 
@@ -497,12 +497,12 @@ stateDiagram-v2
 
 ---
 
-### Phase 4 — Policy Engine, Intervention Selection & Recovery Execution
+### Milestone 4 — Policy Engine, Intervention Selection & Recovery Execution
 
 **Goal:** For each diagnosed case, select the right intervention, check against policy, execute the recovery action (including real Razorpay API calls), simulate outcomes, and handle state transitions.
 
 > [!IMPORTANT]
-> This is the heaviest and most critical phase — the core product logic. Do not rush this to get to the dashboard.
+> This is the heaviest and most critical milestone — the core product logic. Do not rush this to get to the dashboard.
 
 **What to build:**
 - Intervention selection matrix
@@ -659,7 +659,7 @@ stateDiagram-v2
 
 ---
 
-### Phase 5 — Audit Trail & Recovery Attribution
+### Milestone 5 — Audit Trail & Recovery Attribution
 
 **Goal:** Ensure every case has a complete, inspectable audit trail and implement honest recovery attribution.
 
@@ -726,7 +726,7 @@ stateDiagram-v2
 
 ---
 
-### Phase 6 — Streamlit Dashboard
+### Milestone 6 — Streamlit Dashboard
 
 **Goal:** Build the merchant-facing dashboard that makes the **four judging criteria** (measured money, compliant escalation, stopping rules, audit trail) **immediately visible and understandable**.
 
@@ -872,7 +872,7 @@ stateDiagram-v2
 - Metrics match database values exactly
 - Case detail shows complete audit trail with real Razorpay IDs/URLs
 - Live Recovery page processes cases and updates in real-time
-- Historical data (seeded in Phase 2) makes dashboard look established
+- Historical data (seeded in Milestone 2) makes dashboard look established
 
 **Definition of Done:**
 - ✅ 5-page dashboard fully functional
@@ -884,7 +884,7 @@ stateDiagram-v2
 
 ---
 
-### Phase 7 — Integration Testing, Edge Cases & Demo Rehearsal
+### Milestone 7 — Integration Testing, Edge Cases & Demo Rehearsal
 
 **Goal:** End-to-end testing, edge case verification, and rehearsed demo.
 
@@ -1115,21 +1115,21 @@ stateDiagram-v2
 ## Exact Development Order
 
 ```
-Phase 1 (3-4 hrs):   Foundation — DB, models, Razorpay client, LLM client, config
-Phase 2 (2-3 hrs):   Data — Synthetic batch generator, historical seed data
-Phase 3 (2-3 hrs):   Detection — Detector, root cause diagnoser, revenue-at-risk
-Phase 4 (5-6 hrs):   Core Engine — Policy, intervention selector, executor,
+Milestone 1 (3-4 hrs):   Foundation — DB, models, Razorpay client, LLM client, config
+Milestone 2 (2-3 hrs):   Data — Synthetic batch generator, historical seed data
+Milestone 3 (2-3 hrs):   Detection — Detector, root cause diagnoser, revenue-at-risk
+Milestone 4 (5-6 hrs):   Core Engine — Policy, intervention selector, executor,
                       outcome simulator, state machine, orchestrator
-                      ⭐ This is the most critical phase
-Phase 5 (2-3 hrs):   Audit — Complete audit trail, attribution, API endpoints
-Phase 6 (3-4 hrs):   Dashboard — All 5 Streamlit pages with live processing
-Phase 7 (2-3 hrs):   Polish — E2E test, edge cases, demo rehearsal
+                      ⭐ This is the most critical milestone
+Milestone 5 (2-3 hrs):   Audit — Complete audit trail, attribution, API endpoints
+Milestone 6 (3-4 hrs):   Dashboard — All 5 Streamlit pages with live processing
+Milestone 7 (2-3 hrs):   Polish — E2E test, edge cases, demo rehearsal
 
 Total: ~20-25 hours
 ```
 
 > [!IMPORTANT]
-> **Phase 4 is the product.** If Phase 4 is solid, the dashboard (Phase 6) just visualizes it. If Phase 4 is weak, no amount of dashboard polish will save the demo.
+> **Milestone 4 is the product.** If Milestone 4 is solid, the dashboard (Milestone 6) just visualizes it. If Milestone 4 is weak, no amount of dashboard polish will save the demo.
 
 ---
 
