@@ -136,7 +136,8 @@ def run_pipeline_test():
            WHERE c.opt_out = 1 AND rc.status = 'stopped' AND rc.id LIKE 'RC-%'"""
     ).fetchone()[0]
     print(f"  Opt-out customers stopped: {opt_out_stopped}")
-    # (some opt-out cases may have been escalated before policy check due to root cause)
+    if opt_out_stopped != 3:
+        errors.append(f"FAIL: expected 3 opted-out customers stopped, got {opt_out_stopped}")
 
     # Check 7: Minimum amount case (₹35 = 3500 paise) stopped
     micro_cases = conn.execute(
@@ -145,6 +146,12 @@ def run_pipeline_test():
     ).fetchall()
     for mc in micro_cases:
         print(f"  Micro case {mc[0]}: Rs {mc[3]/100} → {mc[1]} (reason: {mc[2]})")
+        if mc[1] != RecoveryStatus.STOPPED.value:
+            errors.append(f"FAIL: below-minimum case {mc[0]} is '{mc[1]}', expected 'stopped'")
+        elif "Minimum Viable Amount" not in (mc[2] or ""):
+            errors.append(f"FAIL: {mc[0]} stopped but not by the minimum-amount rule: {mc[2]}")
+    if not micro_cases:
+        errors.append("FAIL: no below-minimum case in the batch - rule 4 is untested")
 
     # Check 8: High-value cases (₹25,000+ = 2500000 paise) escalated
     high_value_esc = conn.execute(
@@ -156,6 +163,10 @@ def run_pipeline_test():
            WHERE amount_at_risk >= 2500000 AND id LIKE 'RC-%'"""
     ).fetchone()[0]
     print(f"  High-value cases escalated: {high_value_esc}/{high_value_total}")
+    if high_value_total == 0:
+        errors.append("FAIL: no case at/above the high-value threshold - rule 10 is untested")
+    elif high_value_esc != high_value_total:
+        errors.append(f"FAIL: only {high_value_esc}/{high_value_total} high-value cases escalated")
 
     # Check 9: Revenue recovered
     total_recovered_paise = sum(c.get("amount_recovered", 0) for c in active_recovered)
@@ -192,6 +203,49 @@ def run_pipeline_test():
 
     # ── Final Result ──────────────────────────────────────────────────────
     print("\n" + "=" * 60)
+    # Check 12: every stopping rule must actually be exercised by the batch.
+    # Rule 7 (cooldown) is deliberately waived in batch mode - see policy_engine.
+    from database.db import get_policy_trigger_stats
+    from engine.attribution import get_attribution_metrics
+    WAIVED_IN_BATCH = {"Action Cooldown"}
+    rule_stats = get_policy_trigger_stats(conn)
+    print("  Policy rule coverage:")
+    if len(rule_stats) != 10:
+        errors.append(f"FAIL: expected 10 policy rules in the audit trail, found {len(rule_stats)}")
+    for rs in rule_stats:
+        mark = ("OK" if rs["times_triggered"] > 0
+                else ("waived" if rs["rule_name"] in WAIVED_IN_BATCH else "DEAD"))
+        print(f"    {rs['rule_number']:>2}. {rs['rule_name']:26s} "
+              f"evaluated {rs['times_evaluated']:>4}  triggered {rs['times_triggered']:>3}  [{mark}]")
+        if rs["times_triggered"] == 0 and rs["rule_name"] not in WAIVED_IN_BATCH:
+            errors.append(f"FAIL: rule #{rs['rule_number']} ({rs['rule_name']}) never triggered "
+                          f"- it cannot be demonstrated to a judge")
+
+    # Check 13: money may only be attributed to cases that reached RECOVERED.
+    leaked = conn.execute(
+        "SELECT COUNT(*) FROM recovery_cases WHERE status != 'recovered' AND amount_recovered > 0"
+    ).fetchone()[0]
+    if leaked:
+        errors.append(f"FAIL: {leaked} non-recovered cases carry an attributed amount")
+
+    summed = conn.execute(
+        "SELECT COALESCE(SUM(amount_recovered), 0) FROM recovery_cases WHERE status = 'recovered'"
+    ).fetchone()[0]
+    hero = get_attribution_metrics(conn)["summary"]
+    reported = hero["revenue_recovered_paise"]
+    print(f"  Attribution: reported Rs {reported / 100:,.0f} vs summed Rs {summed / 100:,.0f}")
+    if reported != summed:
+        errors.append(f"FAIL: attribution reports {reported} but cases sum to {summed}")
+
+    # Check 14: headline rate must compare like with like (recovered money over
+    # immediate at-risk money, never over lifetime risk).
+    expected_rate = round(reported / hero["revenue_at_risk_paise"] * 100, 1)
+    if abs(hero["recovery_rate_percent"] - expected_rate) > 0.05:
+        errors.append(f"FAIL: recovery rate {hero['recovery_rate_percent']}% != "
+                      f"recovered/at-risk ({expected_rate}%) - denominators are mixed")
+    print(f"  Headline recovery rate: {hero['recovery_rate_percent']}% "
+          f"(Rs {reported / 100:,.0f} of Rs {hero['revenue_at_risk_paise'] / 100:,.0f})")
+
     if errors:
         print("❌ PIPELINE VERIFICATION — ISSUES FOUND:")
         for err in errors:
