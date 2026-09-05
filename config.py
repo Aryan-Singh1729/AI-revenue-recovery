@@ -15,7 +15,11 @@ RAZORPAY_KEY_SECRET: str = os.getenv("RAZORPAY_KEY_SECRET", "")
 
 # ─── LLM (Groq — open-weight models, OpenAI-compatible endpoint) ──────────────
 LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
-LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
+# LLM_API_KEY may be one key, or several comma-separated — extra keys are
+# tried in order if an earlier one fails or is rate-limited, which
+# effectively multiplies the free-tier request budget.
+LLM_API_KEYS: list[str] = [k.strip() for k in os.getenv("LLM_API_KEY", "").split(",") if k.strip()]
+LLM_API_KEY: str = LLM_API_KEYS[0] if LLM_API_KEYS else ""  # back-compat single-key accessor
 LLM_MODEL: str = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
 
 # ─── Database ──────────────────────────────────────────────────────────────────

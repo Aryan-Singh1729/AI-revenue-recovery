@@ -21,24 +21,66 @@ import config
 
 # ─── Client Initialization ─────────────────────────────────────────────────────
 
-_client: OpenAI | None = None
+_clients: dict[str, OpenAI] = {}
+
+
+def _client_for(api_key: str) -> OpenAI:
+    if api_key not in _clients:
+        _clients[api_key] = OpenAI(
+            base_url=config.LLM_BASE_URL,
+            api_key=api_key,
+            timeout=15.0,  # fail fast to the deterministic fallback, don't hang the UI
+        )
+    return _clients[api_key]
 
 
 def get_client() -> OpenAI:
-    """Get or create the OpenAI client pointing at the configured LLM endpoint."""
-    global _client
-    if _client is None:
-        _client = OpenAI(
-            base_url=config.LLM_BASE_URL,
-            api_key=config.LLM_API_KEY,
-            timeout=15.0,  # fail fast to the deterministic fallback, don't hang the UI
-        )
-    return _client
+    """Back-compat accessor — the first configured key's client."""
+    return _client_for(config.LLM_API_KEYS[0] if config.LLM_API_KEYS else config.LLM_API_KEY)
 
 
 def is_configured() -> bool:
     """Check if LLM endpoint is configured."""
-    return bool(config.LLM_BASE_URL and config.LLM_API_KEY)
+    return bool(config.LLM_BASE_URL and config.LLM_API_KEYS)
+
+
+def _complete(messages: list[dict], temperature: float, max_tokens: int,
+              response_format: dict | None = None) -> str | None:
+    """
+    Call chat.completions, trying each configured Groq key in turn.
+
+    Multiple comma-separated keys in LLM_API_KEY exist to multiply the
+    effective free-tier rate limit: if one key fails (exhausted, revoked,
+    transient error), the next is tried before giving up. Returns None
+    (never raises) once every key has failed, so callers apply their own
+    deterministic fallback text — the pipeline never stalls on an AI
+    failure.
+
+    Reasoning models (gpt-oss on Groq, this project's default) spend part
+    of max_tokens on an internal reasoning trace before the visible answer
+    — confirmed via the API's own usage.completion_tokens_details
+    (reasoning_tokens) during setup, where the default reasoning effort
+    ate enough of a 200-token budget to truncate a 3-sentence message.
+    reasoning_effort="low" is plenty for these three short, bounded tasks
+    and leaves far more of the budget for the actual answer. Not every
+    OpenAI-compatible model accepts this param, so each key is tried once
+    with it and once without before moving on — keeps the "point
+    LLM_BASE_URL at any compatible endpoint" promise honest.
+    """
+    keys = config.LLM_API_KEYS or ([config.LLM_API_KEY] if config.LLM_API_KEY else [])
+    base_kwargs = {"model": config.LLM_MODEL, "messages": messages,
+                   "temperature": temperature, "max_tokens": max_tokens}
+    if response_format:
+        base_kwargs["response_format"] = response_format
+    for key in keys:
+        client = _client_for(key)
+        for kwargs in ({**base_kwargs, "reasoning_effort": "low"}, base_kwargs):
+            try:
+                response = client.chat.completions.create(**kwargs)
+                return response.choices[0].message.content.strip()
+            except Exception:
+                continue
+    return None
 
 
 # ─── 1. Ambiguous Root Cause Diagnosis ─────────────────────────────────────────
@@ -90,18 +132,19 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
 {{"root_cause": "<value>", "confidence": <0.0-1.0>, "reasoning": "<one sentence>"}}
 """
 
+    content = _complete(
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2,
+        max_tokens=350,
+        response_format={"type": "json_object"},
+    )
+    if content is None:
+        return {
+            "root_cause": "unknown",
+            "confidence": 0.0,
+            "reasoning": "AI diagnosis unavailable (endpoint unreachable or all keys failed). Defaulting to unknown.",
+        }
     try:
-        client = get_client()
-        response = client.chat.completions.create(
-            model=config.LLM_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=200,
-            response_format={"type": "json_object"},
-        )
-
-        content = response.choices[0].message.content.strip()
-        # Try to parse JSON from the response
         result = json.loads(content)
         return {
             "root_cause": result.get("root_cause", "unknown"),
@@ -109,7 +152,7 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
             "reasoning": result.get("reasoning", "AI diagnosis — see raw output"),
         }
     except Exception as e:
-        # Fallback: if AI fails, return unknown with low confidence
+        # Fallback: model returned non-JSON despite json_object mode
         return {
             "root_cause": "unknown",
             "confidence": 0.0,
@@ -144,16 +187,14 @@ Write a clear, concise 1-2 sentence explanation of WHY this action was chosen
 for this specific root cause. Be specific about the expected outcome.
 Do not use markdown formatting. Write plain text only."""
 
-    try:
-        client = get_client()
-        response = client.chat.completions.create(
-            model=config.LLM_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=150,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
+    content = _complete(
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3,
+        max_tokens=300,
+    )
+    if content is not None:
+        return content
+    else:
         # Deterministic fallback — never block the pipeline on AI failure
         fallback_map = {
             "insufficient_funds": f"Smart retry selected — insufficient funds often resolves within 2-3 days as salary/income credits arrive.",
@@ -213,16 +254,14 @@ Rules:
 - Do not use subject lines or email formatting — just the message body
 - Do not use markdown formatting"""
 
-    try:
-        client = get_client()
-        response = client.chat.completions.create(
-            model=config.LLM_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=200,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
+    content = _complete(
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.7,
+        max_tokens=350,
+    )
+    if content is not None:
+        return content
+    else:
         # Deterministic fallback
         if payment_link_url:
             return (
