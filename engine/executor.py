@@ -200,8 +200,14 @@ def _execute_payment_link(conn: sqlite3.Connection, case: dict, ai_explanation: 
         except Exception as e:
             rzp_response = {"error": str(e), "simulated": True}
     
-    # If Razorpay call failed or not configured, simulate
+    # If Razorpay call failed or not configured, simulate. Preserve the real
+    # error (if a call was actually attempted) instead of a blanket
+    # "not configured" claim — that was previously always shown even when a
+    # real attempt was made and failed, which is the exact dishonest-audit
+    # pattern already fixed for smart retries; caught here by comparing
+    # against real Razorpay test-mode calls once real keys were configured.
     if not link_id:
+        real_call_error = rzp_response.get("error") if rzp_response else None
         sim_id = generate_id("plink_sim_")
         link_id = sim_id
         link_url = f"https://rzp.io/i/{sim_id[-8:]}"
@@ -214,7 +220,11 @@ def _execute_payment_link(conn: sqlite3.Connection, case: dict, ai_explanation: 
             "status": "created",
             "customer": {"name": customer_name, "email": customer_email},
             "expire_by": (datetime.utcnow() + timedelta(days=config.PAYMENT_LINK_EXPIRY_DAYS)).isoformat(),
-            "note": "Razorpay not configured — simulated payment link",
+            "note": (
+                f"Razorpay call failed after retries — simulated payment link ({real_call_error})"
+                if real_call_error else
+                "Razorpay not configured — simulated payment link"
+            ),
         }
 
     # Update case with link info

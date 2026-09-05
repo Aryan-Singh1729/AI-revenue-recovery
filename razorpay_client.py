@@ -11,6 +11,26 @@ import razorpay
 
 import config
 
+# Razorpay's test-mode API transiently rejects a fraction of calls under
+# rapid-fire load (observed directly: same call, same data, succeeds
+# instantly on its own — confirming it's a transient rate/timing issue, not
+# a data problem). A couple of quick retries clears almost all of these
+# without meaningfully slowing down a live demo.
+_MAX_ATTEMPTS = 3
+_RETRY_DELAY_SECONDS = 0.6
+
+
+def _with_retries(fn):
+    last_error = None
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            return fn(), None
+        except Exception as e:
+            last_error = e
+            if attempt < _MAX_ATTEMPTS - 1:
+                time.sleep(_RETRY_DELAY_SECONDS)
+    return None, last_error
+
 
 # ─── Client Initialization ─────────────────────────────────────────────────────
 
@@ -106,8 +126,8 @@ def create_payment_link(
         },
     }
 
-    try:
-        response = client.payment_link.create(payload)
+    response, error = _with_retries(lambda: client.payment_link.create(payload))
+    if response is not None:
         return {
             "success": True,
             "id": response.get("id"),
@@ -116,12 +136,11 @@ def create_payment_link(
             "status": response.get("status"),
             "raw_response": response,
         }
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "raw_response": None,
-        }
+    return {
+        "success": False,
+        "error": str(error),
+        "raw_response": None,
+    }
 
 
 # ─── Payments (Smart Retry) ───────────────────────────────────────────────────
@@ -135,16 +154,15 @@ def create_test_payment(amount_paise: int, description: str = "Recovery retry") 
     """
     client = get_client()
 
-    try:
-        # Create an order first (required by Razorpay)
-        order = client.order.create({
-            "amount": amount_paise,
-            "currency": "INR",
-            "notes": {
-                "source": "ai_revenue_recovery",
-                "type": "smart_retry",
-            },
-        })
+    order, error = _with_retries(lambda: client.order.create({
+        "amount": amount_paise,
+        "currency": "INR",
+        "notes": {
+            "source": "ai_revenue_recovery",
+            "type": "smart_retry",
+        },
+    }))
+    if order is not None:
         return {
             "success": True,
             "order_id": order.get("id"),
@@ -152,12 +170,11 @@ def create_test_payment(amount_paise: int, description: str = "Recovery retry") 
             "status": order.get("status"),
             "raw_response": order,
         }
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "raw_response": None,
-        }
+    return {
+        "success": False,
+        "error": str(error),
+        "raw_response": None,
+    }
 
 
 # ─── Fetch Payment Details ────────────────────────────────────────────────────
