@@ -49,6 +49,37 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+
+@st.cache_resource
+def _ensure_database_ready():
+    """
+    On a fresh deploy (e.g. Streamlit Community Cloud), data/recovery.db
+    doesn't exist yet — it's gitignored, normally created locally by running
+    the generator scripts first. Without this, the very first query in the
+    sidebar below crashes every page with sqlite3.OperationalError: no such
+    table, before a visitor ever gets a chance to click "Regenerate demo
+    batch." Create the schema if missing, and seed the canonical demo batch
+    if it's empty, so a brand-new deployment is never left crashed or blank.
+    @st.cache_resource makes this run exactly once per app process, not on
+    every rerun/button click.
+    """
+    from database.db import init_db, get_connection
+    init_db()
+    conn = get_connection()
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM recovery_cases").fetchone()[0]
+    finally:
+        conn.close()
+    if count == 0:
+        from data.generate_batch import generate_batch
+        from data.seed_historical import seed_historical
+        generate_batch()
+        seed_historical()
+    return True
+
+
+_ensure_database_ready()
+
 # ─── Helpers ────────────────────────────────────────────────────────────────
 
 def rupees(paise: float) -> str:
