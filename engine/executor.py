@@ -32,6 +32,7 @@ def execute_action(
     conn: sqlite3.Connection,
     case: dict,
     action_type: ActionType,
+    ai_explanation: str | None = None,
 ) -> dict:
     """
     Execute a recovery action for a case.
@@ -40,6 +41,11 @@ def execute_action(
         conn: Active SQLite connection.
         case: Enriched case dict with customer/subscription details.
         action_type: The action to execute.
+        ai_explanation: Optional AI-generated explanation of why this
+            intervention was chosen (from ai.llm.explain_intervention()),
+            attached to the audit entry for SMART_RETRY/PAYMENT_LINK. Ignored
+            by DUNNING_MESSAGE (which generates its own AI content — the
+            message itself) and ESCALATION (deterministic reasoning only).
 
     Returns:
         {
@@ -50,9 +56,9 @@ def execute_action(
         }
     """
     if action_type == ActionType.SMART_RETRY:
-        return _execute_smart_retry(conn, case)
+        return _execute_smart_retry(conn, case, ai_explanation)
     elif action_type == ActionType.PAYMENT_LINK:
-        return _execute_payment_link(conn, case)
+        return _execute_payment_link(conn, case, ai_explanation)
     elif action_type == ActionType.DUNNING_MESSAGE:
         return _execute_dunning(conn, case)
     elif action_type == ActionType.ESCALATION:
@@ -72,7 +78,7 @@ def execute_escalation(
 
 # ─── Smart Retry ──────────────────────────────────────────────────────────────
 
-def _execute_smart_retry(conn: sqlite3.Connection, case: dict) -> dict:
+def _execute_smart_retry(conn: sqlite3.Connection, case: dict, ai_explanation: str | None = None) -> dict:
     """Attempt a payment retry via Razorpay test mode."""
     case_id = case["id"]
     amount_paise = case.get("amount_at_risk", 0)
@@ -143,11 +149,13 @@ def _execute_smart_retry(conn: sqlite3.Connection, case: dict) -> dict:
             "attempt_number": case.get("attempt_count", 0) + 1,
             "razorpay_response": rzp_response,
             "is_real_order": real_order_created,
+            "ai_explanation": ai_explanation,
         },
         reasoning=(
             f"Smart retry #{case.get('attempt_count', 0) + 1} dispatched for "
             f"Rs {amount_rupees:,.0f}. "
             f"{'Real Razorpay order created.' if real_order_created else 'Simulated order (Razorpay not configured or call failed).'}"
+            + (f" {ai_explanation}" if ai_explanation else "")
         ),
     )
 
@@ -156,12 +164,13 @@ def _execute_smart_retry(conn: sqlite3.Connection, case: dict) -> dict:
         "action_type": ActionType.SMART_RETRY.value,
         "success": action_success,
         "details": rzp_response,
+        "ai_explanation": ai_explanation,
     }
 
 
 # ─── Payment Link ─────────────────────────────────────────────────────────────
 
-def _execute_payment_link(conn: sqlite3.Connection, case: dict) -> dict:
+def _execute_payment_link(conn: sqlite3.Connection, case: dict, ai_explanation: str | None = None) -> dict:
     """Create a real Razorpay Payment Link."""
     case_id = case["id"]
     amount_paise = case.get("amount_at_risk", 0)
@@ -246,11 +255,13 @@ def _execute_payment_link(conn: sqlite3.Connection, case: dict) -> dict:
             "customer_name": customer_name,
             "expiry_days": config.PAYMENT_LINK_EXPIRY_DAYS,
             "is_real_link": _razorpay_available and not rzp_response.get("simulated", False),
+            "ai_explanation": ai_explanation,
         },
         reasoning=(
             f"Payment link created: {link_url} for Rs {amount_rupees:,.0f} "
             f"(expires in {config.PAYMENT_LINK_EXPIRY_DAYS} days). "
             f"{'Real Razorpay link — clickable!' if _razorpay_available and not rzp_response.get('simulated') else 'Simulated link.'}"
+            + (f" {ai_explanation}" if ai_explanation else "")
         ),
     )
 
@@ -263,6 +274,7 @@ def _execute_payment_link(conn: sqlite3.Connection, case: dict) -> dict:
             "link_url": link_url,
             "razorpay_response": rzp_response,
         },
+        "ai_explanation": ai_explanation,
     }
 
 

@@ -13,10 +13,10 @@ load_dotenv(Path(__file__).parent / ".env")
 RAZORPAY_KEY_ID: str = os.getenv("RAZORPAY_KEY_ID", "")
 RAZORPAY_KEY_SECRET: str = os.getenv("RAZORPAY_KEY_SECRET", "")
 
-# ─── LLM (GPT 5.6 Sol via Kilo Code) ──────────────────────────────────────────
-LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "http://localhost:5001/v1")
-LLM_API_KEY: str = os.getenv("LLM_API_KEY", "kilo-code-key")
-LLM_MODEL: str = os.getenv("LLM_MODEL", "gpt-5.6-sol")
+# ─── LLM (Groq — open-weight models, OpenAI-compatible endpoint) ──────────────
+LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
+LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
+LLM_MODEL: str = os.getenv("LLM_MODEL", "llama-3.3-70b-versatile")
 
 # ─── Database ──────────────────────────────────────────────────────────────────
 DATABASE_PATH: str = os.getenv("DATABASE_PATH", "data/recovery.db")

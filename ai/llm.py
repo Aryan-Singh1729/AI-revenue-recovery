@@ -1,5 +1,6 @@
 """
-LLM client — GPT 5.6 Sol via Kilo Code (OpenAI-compatible endpoint).
+LLM client — Groq-hosted open-weight models (or any OpenAI-compatible
+endpoint — swap LLM_BASE_URL/LLM_MODEL in .env to point elsewhere).
 
 Three bounded functions only:
 1. diagnose_ambiguous()     — Root cause reasoning for ambiguous error codes
@@ -7,6 +8,9 @@ Three bounded functions only:
 3. generate_dunning_message() — Contextual, empathetic recovery message
 
 All detection, policy, and state logic is deterministic Python — not AI.
+Every function below falls back to deterministic text if the call fails
+(unreachable endpoint, bad key, rate limit) — the pipeline never stalls or
+breaks on an AI failure.
 """
 
 import json
@@ -21,12 +25,13 @@ _client: OpenAI | None = None
 
 
 def get_client() -> OpenAI:
-    """Get or create the OpenAI client pointing at Kilo Code endpoint."""
+    """Get or create the OpenAI client pointing at the configured LLM endpoint."""
     global _client
     if _client is None:
         _client = OpenAI(
             base_url=config.LLM_BASE_URL,
             api_key=config.LLM_API_KEY,
+            timeout=15.0,  # fail fast to the deterministic fallback, don't hang the UI
         )
     return _client
 
@@ -92,6 +97,7 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
             max_tokens=200,
+            response_format={"type": "json_object"},
         )
 
         content = response.choices[0].message.content.strip()

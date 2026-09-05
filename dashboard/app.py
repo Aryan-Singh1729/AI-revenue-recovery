@@ -114,6 +114,23 @@ def root_cause_label(rc: str | None) -> str:
     return rc.replace("_", " ").title()
 
 
+def themed(fig, **layout_kwargs):
+    """
+    Apply the app's shared chart styling: transparent background (so the
+    chart sits flush inside a card instead of showing a plain white
+    rectangle) and the same font as the rest of the page. Any additional
+    layout kwargs (height, title, margin, ...) are passed straight through
+    to fig.update_layout — this changes only appearance, not chart data.
+    """
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Manrope, sans-serif", color="#1E1B2E"),
+        **layout_kwargs,
+    )
+    return fig
+
+
 def goto(page_label: str, case_id: str | None = None):
     """
     Programmatic page navigation.
@@ -348,21 +365,22 @@ if page == PAGES[0]:
         )
         st.stop()
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("💰 Revenue at Risk", rupees(m["revenue_at_risk_paise"]),
-              help="Sum of the failed billing cycle across every case in the batch — "
-                   "the money that was on the table before the agent did anything.")
-    c2.metric("✅ Revenue Recovered", rupees(m["revenue_recovered_paise"]),
-              help="Conservatively attributed: only counted when a payment actually succeeded "
-                   "after the agent's own retry, payment link, or dunning message. "
-                   "Escalated and stopped cases are never counted here, even if a merchant "
-                   "later recovers them manually.")
-    c3.metric("📈 Recovery Rate", f"{m['recovery_rate_percent']}%",
-              help="Revenue Recovered ÷ Revenue at Risk. Both sides use the same immediate-cycle "
-                   "amount — never mixed with the larger lifetime-risk figure below.")
-    c4.metric("📊 Cases Processed", m["total_cases_tracked"],
-              help="Every case in the batch that reached a terminal state — recovered, "
-                   "escalated, or stopped. None are left mid-pipeline.")
+    with st.container(border=True):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("💰 Revenue at Risk", rupees(m["revenue_at_risk_paise"]),
+                  help="Sum of the failed billing cycle across every case in the batch — "
+                       "the money that was on the table before the agent did anything.")
+        c2.metric("✅ Revenue Recovered", rupees(m["revenue_recovered_paise"]),
+                  help="Conservatively attributed: only counted when a payment actually succeeded "
+                       "after the agent's own retry, payment link, or dunning message. "
+                       "Escalated and stopped cases are never counted here, even if a merchant "
+                       "later recovers them manually.")
+        c3.metric("📈 Recovery Rate", f"{m['recovery_rate_percent']}%",
+                  help="Revenue Recovered ÷ Revenue at Risk. Both sides use the same immediate-cycle "
+                       "amount — never mixed with the larger lifetime-risk figure below.")
+        c4.metric("📊 Cases Processed", m["total_cases_tracked"],
+                  help="Every case in the batch that reached a terminal state — recovered, "
+                       "escalated, or stopped. None are left mid-pipeline.")
 
     st.caption(
         f"Lifetime revenue at risk (amount × remaining billing cycles): "
@@ -387,20 +405,21 @@ if page == PAGES[0]:
             f"**{unrec_n}** unrecovered ({rupees(unrec_amt)} at risk)"
         )
 
-        r1, r2, r3, r4 = st.columns(4)
-        r1.metric("🟢 Recovered", m["cases_recovered"], rupees(rec_amt))
-        r2.metric("🟠 Escalated", m["cases_escalated"], rupees(esc_amt) + " at risk",
-                  help="Handed to a human with full context — fraud, disputes, high-value "
-                       "cases, or a root cause with no safe automated path. The agent knows "
-                       "its own limits.")
-        r3.metric("🔴 Stopped", m["cases_stopped"], rupees(stp_amt) + " at risk",
-                  help="A stopping rule fired: below the minimum recovery amount, an opted-out "
-                       "customer, a dispute, or the cost of continuing would exceed the value "
-                       "of the payment.")
-        r4.metric("⚪ Unrecovered (exhausted)", unrec_n, rupees(unrec_amt) + " at risk",
-                  help="Escalated, but only after every automated intervention in its sequence "
-                       "was tried and failed — distinct from an immediate escalation where no "
-                       "automated path ever existed.")
+        with st.container(border=True):
+            r1, r2, r3, r4 = st.columns(4)
+            r1.metric("🟢 Recovered", m["cases_recovered"], rupees(rec_amt))
+            r2.metric("🟠 Escalated", m["cases_escalated"], rupees(esc_amt) + " at risk",
+                      help="Handed to a human with full context — fraud, disputes, high-value "
+                           "cases, or a root cause with no safe automated path. The agent knows "
+                           "its own limits.")
+            r3.metric("🔴 Stopped", m["cases_stopped"], rupees(stp_amt) + " at risk",
+                      help="A stopping rule fired: below the minimum recovery amount, an opted-out "
+                           "customer, a dispute, or the cost of continuing would exceed the value "
+                           "of the payment.")
+            r4.metric("⚪ Unrecovered (exhausted)", unrec_n, rupees(unrec_amt) + " at risk",
+                      help="Escalated, but only after every automated intervention in its sequence "
+                           "was tried and failed — distinct from an immediate escalation where no "
+                           "automated path ever existed.")
 
     st.divider()
 
@@ -458,7 +477,7 @@ if page == PAGES[0]:
                     value=[l[2] for l in links],
                 ),
             ))
-            fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=380, font_size=12)
+            themed(fig, margin=dict(t=10, b=10, l=10, r=10), height=380)
             st.plotly_chart(fig, width="stretch")
 
     with col_cause:
@@ -476,7 +495,7 @@ if page == PAGES[0]:
             )
             fig2.update_traces(marker_color="#3b82f6")
             fig2.update_xaxes(tickprefix="₹", tickformat=",.0f")
-            fig2.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=380)
+            themed(fig2, margin=dict(t=10, b=10, l=10, r=10), height=380)
             st.plotly_chart(fig2, width="stretch")
         else:
             st.info("No diagnosed cases yet.")
@@ -642,11 +661,12 @@ elif page == PAGES[2]:
 
     badge = STATUS_BADGE.get(case["status"], case["status"])
     st.subheader(f"{case['customer_name']} — {case['plan_name']} plan")
-    h1, h2, h3, h4 = st.columns(4)
-    h1.metric("Status", badge)
-    h2.metric("Amount at Risk", rupees(case["amount_at_risk"]))
-    h3.metric("Amount Recovered", rupees(case["amount_recovered"]))
-    h4.metric("Root Cause", root_cause_label(case.get("root_cause")))
+    with st.container(border=True):
+        h1, h2, h3, h4 = st.columns(4)
+        h1.metric("Status", badge)
+        h2.metric("Amount at Risk", rupees(case["amount_at_risk"]))
+        h3.metric("Amount Recovered", rupees(case["amount_recovered"]))
+        h4.metric("Root Cause", root_cause_label(case.get("root_cause")))
 
     if case.get("razorpay_payment_link_url"):
         link_event = next((e for e in trail if e["event_type"] == "payment_link_created"), None)
@@ -687,6 +707,9 @@ elif page == PAGES[2]:
             elif ev["event_type"] == "dunning_generated" and ev["details"].get("message_text"):
                 st.markdown("**AI-generated message:**")
                 st.info(ev["details"]["message_text"])
+            elif ev["event_type"] == "action_executed" and ev["details"].get("ai_explanation"):
+                st.markdown("**🤖 AI explanation:**")
+                st.info(ev["details"]["ai_explanation"])
             else:
                 st.json(ev["details"])
 
@@ -711,6 +734,13 @@ elif page == PAGES[3]:
         "The complete loop, in two visible moments: the agent deciding and acting, "
         "then the customer's response closing the loop."
     )
+    if _llm_live:
+        st.caption(f"🧠 Reasoning model: **{config.LLM_MODEL}** — live, called per case below")
+    else:
+        st.caption(
+            "🧠 AI unreachable right now — explanations & messages below will use "
+            "deterministic fallback text instead of a live model call"
+        )
 
     conn = get_connection()
     try:
@@ -725,11 +755,12 @@ elif page == PAGES[3]:
     finally:
         conn.close()
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Awaiting Detection", pending_new)
-    c2.metric("Awaiting Diagnosis", pending_diag)
-    c3.metric("Ready to Dispatch", pending_dispatch)
-    c4.metric("Awaiting Outcome", pending_outcome)
+    with st.container(border=True):
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Awaiting Detection", pending_new)
+        c2.metric("Awaiting Diagnosis", pending_diag)
+        c3.metric("Ready to Dispatch", pending_dispatch)
+        c4.metric("Awaiting Outcome", pending_outcome)
 
     nothing_pending = pending_new == pending_diag == pending_dispatch == pending_outcome == 0
 
@@ -778,13 +809,22 @@ elif page == PAGES[3]:
                         st.write(f"🧠 Diagnosing {len(enriched)} cases...")
                     for c in enriched:
                         c = get_case_with_details(conn, c["id"])
-                        result = diagnose(conn, c)
                         with log_box:
-                            st.write(
-                                f"  Diagnosing **{c['id']}**... root cause: "
-                                f"**{result['root_cause'].value}** ({result['method']}, "
-                                f"confidence {result['confidence']:.2f})"
-                            )
+                            with st.spinner(f"Diagnosing {c['id']}..."):
+                                result = diagnose(conn, c)
+                            if result["method"] == "ai":
+                                st.write(f"  **{c['id']}** — error reason unmapped, asking the AI...")
+                                with st.chat_message("assistant"):
+                                    st.write(
+                                        f"{result['reasoning']}\n\n"
+                                        f"→ **{result['root_cause'].value}** "
+                                        f"(confidence {result['confidence']:.2f})"
+                                    )
+                            else:
+                                st.write(
+                                    f"  **{c['id']}** — ⚡ instant rule match → "
+                                    f"**{result['root_cause'].value}** (deterministic, no AI call needed)"
+                                )
                     conn.commit()
 
                 from database.db import get_cases_by_status
@@ -803,7 +843,9 @@ elif page == PAGES[3]:
                             f"{case.get('plan_name', '?')} | ₹{amt:,.0f} | "
                             f"{root_cause_label(case.get('root_cause'))}"
                         )
-                    result = dispatch_next_action(conn, case)
+                    with log_box:
+                        with st.spinner("Selecting intervention, checking 10 policy rules..."):
+                            result = dispatch_next_action(conn, case)
                     conn.commit()
 
                     with log_box:
@@ -824,6 +866,13 @@ elif page == PAGES[3]:
                             details = (result.get("action_result") or {}).get("details", {})
                             if isinstance(details, dict) and details.get("link_url"):
                                 st.write(f"  🔗 Payment link created: {details['link_url']}")
+                            if result.get("ai_explanation"):
+                                with st.chat_message("assistant"):
+                                    st.write(result["ai_explanation"])
+                            message_text = details.get("message_text") if isinstance(details, dict) else None
+                            if message_text:
+                                with st.chat_message("assistant"):
+                                    st.write(f"✉️ {message_text}")
                             stats["awaiting_outcome"] += 1
                         elif result["outcome"] == "escalated":
                             st.warning(f"  ⚠️ ESCALATED — {result['reason']}")
@@ -872,7 +921,8 @@ elif page == PAGES[3]:
                         continue
                     with log_box2:
                         st.markdown(f"**{case['id']}** — simulating customer response...")
-                    result = resolve_outcome(conn, case)
+                        with st.spinner("Resolving outcome (may retry with the next intervention)..."):
+                            result = resolve_outcome(conn, case)
                     conn.commit()
 
                     with log_box2:
@@ -882,6 +932,9 @@ elif page == PAGES[3]:
                                 f"  🎲 {ACTION_LABEL.get(rnd['action'], rnd['action'])} "
                                 f"(p={rnd['probability']*100:.0f}%)... {icon}"
                             )
+                        for explanation in result.get("ai_explanations", []):
+                            with st.chat_message("assistant"):
+                                st.write(explanation)
                         if result["final_status"] == "recovered":
                             st.success(f"  ✅ RECOVERED ₹{result['amount_recovered']/100:,.0f}")
                             stats["recovered"] += 1
@@ -1010,14 +1063,15 @@ elif page == PAGES[4]:
     finally:
         conn.close()
 
-    s1, s2, s3, s4 = st.columns(4)
-    s1.metric("Policy Checks Run", total_checks,
-              help="Every proposed action — retry, link, message, or escalation — is checked "
-                   "against all 10 rules before it's allowed to run. This is the count of "
-                   "those checks.")
-    s2.metric("Actions Executed", total_nonesc_actions, help="Every one was preceded by a passing policy check.")
-    s3.metric("Actions on Fraud Cases", fraud_actions, help="Must always be 0.")
-    s4.metric("Comms to Opted-Out Customers", optout_comms, help="Must always be 0.")
+    with st.container(border=True):
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Policy Checks Run", total_checks,
+                  help="Every proposed action — retry, link, message, or escalation — is checked "
+                       "against all 10 rules before it's allowed to run. This is the count of "
+                       "those checks.")
+        s2.metric("Actions Executed", total_nonesc_actions, help="Every one was preceded by a passing policy check.")
+        s3.metric("Actions on Fraud Cases", fraud_actions, help="Must always be 0.")
+        s4.metric("Comms to Opted-Out Customers", optout_comms, help="Must always be 0.")
 
     if fraud_actions == 0 and optout_comms == 0:
         st.success(
@@ -1038,6 +1092,6 @@ elif page == PAGES[4]:
             color_discrete_map={"Allowed": "#22c55e", "Escalated": "#f59e0b",
                                 "Stopped": "#ef4444", "Waited": "#94a3b8"},
         )
-        fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), height=320,
-                          title="Policy check results (all 10-rule evaluations)")
+        themed(fig, margin=dict(t=10, b=10, l=10, r=10), height=320,
+              title="Policy check results (all 10-rule evaluations)")
         st.plotly_chart(fig, width="stretch")

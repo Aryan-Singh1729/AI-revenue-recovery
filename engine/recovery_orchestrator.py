@@ -46,6 +46,7 @@ from engine.policy_engine import check_policy
 from engine.executor import execute_action, execute_escalation
 from engine.outcome_simulator import simulate_outcome
 from engine.state_machine import transition
+from ai import llm
 
 MAX_ROUNDS = 5  # Safety bound on interventions-per-case, shared by both halves.
 
@@ -72,6 +73,7 @@ def dispatch_next_action(conn: sqlite3.Connection, case: dict) -> dict:
             "policy_result": str | None,           # PolicyResult value
             "policy_summary": str | None,          # e.g. "10/10 rules passed"
             "action_result": dict | None,          # executor's return value
+            "ai_explanation": str | None,          # LLM's explanation of the choice, if one was made
             "reason": str,
         }
     """
@@ -116,6 +118,7 @@ def dispatch_next_action(conn: sqlite3.Connection, case: dict) -> dict:
                     "selected_action": None, "intervention_step": None,
                     "policy_result": policy_result["result"].value, "policy_summary": policy_summary,
                     "action_result": None, "reason": policy_result["reason"],
+                    "ai_explanation": None,
                 }
 
             # ESCALATE (fraud, high value) or ALLOWED-but-no-path
@@ -134,6 +137,7 @@ def dispatch_next_action(conn: sqlite3.Connection, case: dict) -> dict:
                 "selected_action": None, "intervention_step": None,
                 "policy_result": policy_result["result"].value, "policy_summary": policy_summary,
                 "action_result": esc_result, "reason": reason,
+                "ai_explanation": None,
             }
 
         # (b) Interventions were attempted and all of them failed.
@@ -149,6 +153,7 @@ def dispatch_next_action(conn: sqlite3.Connection, case: dict) -> dict:
             "selected_action": None, "intervention_step": None,
             "policy_result": None, "policy_summary": None,
             "action_result": esc_result, "reason": "All automated interventions exhausted",
+            "ai_explanation": None,
         }
 
     # ── A concrete intervention is proposed ─────────────────────────────────
@@ -194,6 +199,7 @@ def dispatch_next_action(conn: sqlite3.Connection, case: dict) -> dict:
             "selected_action": next_action.value, "intervention_step": step_label,
             "policy_result": policy_result["result"].value, "policy_summary": policy_summary,
             "action_result": esc_result, "reason": policy_result["reason"],
+            "ai_explanation": None,
         }
 
     if policy_result["result"] == PolicyResult.STOP:
@@ -209,6 +215,7 @@ def dispatch_next_action(conn: sqlite3.Connection, case: dict) -> dict:
             "selected_action": next_action.value, "intervention_step": step_label,
             "policy_result": policy_result["result"].value, "policy_summary": policy_summary,
             "action_result": None, "reason": policy_result["reason"],
+            "ai_explanation": None,
         }
 
     # ALLOWED (or WAIT, waived in batch mode — see policy_engine rule 7) → execute
@@ -216,7 +223,22 @@ def dispatch_next_action(conn: sqlite3.Connection, case: dict) -> dict:
                RecoveryStatus.EXECUTING.value,
                reason=f"Policy allowed: executing {next_action.value}")
 
-    action_result = execute_action(conn, case, next_action)
+    # Ask the LLM to explain the choice for the two automated recovery
+    # actions (not dunning — that call generates its own AI content, the
+    # message itself; not escalation — deterministic reasoning is enough).
+    # explain_intervention() has its own deterministic fallback baked in, so
+    # this is safe even if the LLM is unreachable or rate-limited.
+    ai_explanation = None
+    if next_action in (ActionType.SMART_RETRY, ActionType.PAYMENT_LINK):
+        ai_explanation = llm.explain_intervention(
+            root_cause=root_cause.value,
+            selected_action=next_action.value,
+            alternatives=alternatives,
+            amount_rupees=case.get("amount_at_risk", 0) / 100,
+            attempt_number=len(interventions_tried) + 1,
+        )
+
+    action_result = execute_action(conn, case, next_action, ai_explanation=ai_explanation)
 
     interventions_tried.append(next_action.value)
     update_case(conn, case_id, {"interventions_tried": interventions_tried})
@@ -231,6 +253,7 @@ def dispatch_next_action(conn: sqlite3.Connection, case: dict) -> dict:
         "policy_result": policy_result["result"].value, "policy_summary": policy_summary,
         "action_result": action_result,
         "reason": f"{next_action.value} dispatched, awaiting outcome",
+        "ai_explanation": ai_explanation,
     }
 
 
@@ -248,6 +271,7 @@ def resolve_outcome(conn: sqlite3.Connection, case: dict) -> dict:
             "amount_recovered": int,    # paise
             "rounds": [{"action": str, "success": bool, "probability": float}, ...],
             "actions_taken": [dict, ...],  # action_results from any dispatch_next_action calls
+            "ai_explanations": [str, ...], # any LLM explanations from those dispatch calls
             "reason": str,
         }
     """
@@ -258,12 +282,14 @@ def resolve_outcome(conn: sqlite3.Connection, case: dict) -> dict:
 
     rounds: list[dict] = []
     actions_taken: list[dict] = []
+    ai_explanations: list[str] = []
 
     if case["status"] != RecoveryStatus.AWAITING_OUTCOME.value:
         return {
             "case_id": case_id, "final_status": case["status"],
             "amount_recovered": case.get("amount_recovered", 0),
             "rounds": rounds, "actions_taken": actions_taken,
+            "ai_explanations": ai_explanations,
             "reason": "Case is not awaiting an outcome",
         }
 
@@ -312,6 +338,7 @@ def resolve_outcome(conn: sqlite3.Connection, case: dict) -> dict:
                 "case_id": case_id, "final_status": RecoveryStatus.RECOVERED.value,
                 "amount_recovered": amount_paise, "rounds": rounds,
                 "actions_taken": actions_taken,
+                "ai_explanations": ai_explanations,
                 "reason": f"Recovered via {last_action}",
             }
 
@@ -324,11 +351,14 @@ def resolve_outcome(conn: sqlite3.Connection, case: dict) -> dict:
         dispatch_result = dispatch_next_action(conn, case)
         if dispatch_result["action_result"]:
             actions_taken.append(dispatch_result["action_result"])
+        if dispatch_result.get("ai_explanation"):
+            ai_explanations.append(dispatch_result["ai_explanation"])
 
         if dispatch_result["outcome"] != "awaiting_outcome":
             return {
                 "case_id": case_id, "final_status": dispatch_result["outcome"],
                 "amount_recovered": 0, "rounds": rounds, "actions_taken": actions_taken,
+                "ai_explanations": ai_explanations,
                 "reason": dispatch_result["reason"],
             }
         # else: loop again, next iteration simulates this new action.
@@ -343,6 +373,7 @@ def resolve_outcome(conn: sqlite3.Connection, case: dict) -> dict:
         return {
             "case_id": case_id, "final_status": RecoveryStatus.ESCALATED.value,
             "amount_recovered": 0, "rounds": rounds, "actions_taken": actions_taken,
+            "ai_explanations": ai_explanations,
             "reason": "Safety bound reached",
         }
     final_case = get_case_with_details(conn, case_id)
@@ -350,7 +381,8 @@ def resolve_outcome(conn: sqlite3.Connection, case: dict) -> dict:
         "case_id": case_id,
         "final_status": final_case["status"] if final_case else "escalated",
         "amount_recovered": final_case.get("amount_recovered", 0) if final_case else 0,
-        "rounds": rounds, "actions_taken": actions_taken, "reason": "Terminal state reached",
+        "rounds": rounds, "actions_taken": actions_taken,
+        "ai_explanations": ai_explanations, "reason": "Terminal state reached",
     }
 
 
