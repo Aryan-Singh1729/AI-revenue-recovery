@@ -139,9 +139,14 @@ def is_unrecovered(case: dict) -> bool:
     )
 
 
-def root_cause_label(rc: str | None) -> str:
-    if not rc:
-        return "Unknown"
+def root_cause_label(rc) -> str:
+    # `not rc` alone doesn't catch it: pandas represents a NULL root_cause
+    # (an undiagnosed case, fresh off detection) as NaN, and NaN is truthy
+    # in Python — only None/"" are falsy — so it slipped past this guard
+    # and crashed on rc.replace() the first time a freshly-seeded, not-yet-
+    # diagnosed batch reached this page instead of an already-processed one.
+    if not isinstance(rc, str) or not rc:
+        return "Not yet diagnosed"
     return rc.replace("_", " ").title()
 
 
