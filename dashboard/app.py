@@ -423,82 +423,93 @@ if page == PAGES[0]:
 
     st.divider()
 
-    col_funnel, col_cause = st.columns([1, 1])
+    st.subheader("Recovery Funnel")
+    st.caption("Detected → Diagnosed → Policy-checked & Executed → Outcome")
+    if df.empty:
+        st.info("No cases yet.")
+    else:
+        total = len(df)
+        diagnosed_mask = df["root_cause"].notna()
+        diagnosed_n = int(diagnosed_mask.sum())
+        attempted_mask = df["attempted"] & diagnosed_mask
+        attempted_n = int(attempted_mask.sum())
+        blocked_mask = diagnosed_mask & ~attempted_mask
+        blocked_n = int(blocked_mask.sum())
 
-    with col_funnel:
-        st.subheader("Recovery Funnel")
-        st.caption("Detected → Diagnosed → Policy-checked & Executed → Outcome")
-        if df.empty:
-            st.info("No cases yet.")
-        else:
-            total = len(df)
-            diagnosed_mask = df["root_cause"].notna()
-            diagnosed_n = int(diagnosed_mask.sum())
-            attempted_mask = df["attempted"] & diagnosed_mask
-            attempted_n = int(attempted_mask.sum())
-            blocked_mask = diagnosed_mask & ~attempted_mask
-            blocked_n = int(blocked_mask.sum())
+        rec_mask = df["status"] == "recovered"
+        esc_att_mask = (df["status"] == "escalated") & attempted_mask
+        stp_att_mask = (df["status"] == "stopped") & attempted_mask
+        esc_imm_mask = (df["status"] == "escalated") & blocked_mask
+        stp_imm_mask = (df["status"] == "stopped") & blocked_mask
 
-            rec_mask = df["status"] == "recovered"
-            esc_att_mask = (df["status"] == "escalated") & attempted_mask
-            stp_att_mask = (df["status"] == "stopped") & attempted_mask
-            esc_imm_mask = (df["status"] == "escalated") & blocked_mask
-            stp_imm_mask = (df["status"] == "stopped") & blocked_mask
+        nodes = [
+            f"Detected ({total})",
+            f"Diagnosed ({diagnosed_n})",
+            f"Recovery Attempted ({attempted_n})",
+            f"No Automated Path ({blocked_n})",
+            f"🟢 Recovered ({int(rec_mask.sum())})",
+            f"🟠 Escalated ({m['cases_escalated']})",
+            f"🔴 Stopped ({m['cases_stopped']})",
+        ]
+        raw_links = [
+            (0, 1, diagnosed_n),
+            (1, 2, attempted_n),
+            (1, 3, blocked_n),
+            (2, 4, int(rec_mask.sum())),
+            (2, 5, int(esc_att_mask.sum())),
+            (2, 6, int(stp_att_mask.sum())),
+            (3, 5, int(esc_imm_mask.sum())),
+            (3, 6, int(stp_imm_mask.sum())),
+        ]
+        links = [l for l in raw_links if l[2] > 0]
+        # Fixed node positions instead of Plotly's automatic (value-weighted)
+        # layout: auto-layout kept drifting "No Automated Path" down into
+        # "Stopped"'s label — since both sit at a similar height whenever
+        # the underlying counts happen to be close, no amount of margin/pad
+        # tuning fixes that reliably. Explicit x/y guarantees every label
+        # keeps clear vertical space from its neighbors regardless of what
+        # the actual case counts are on any given run.
+        node_x = [0.02, 0.35, 0.68, 0.68, 0.98, 0.98, 0.98]
+        node_y = [0.50, 0.50, 0.28, 0.68, 0.13, 0.50, 0.87]
+        fig = go.Figure(go.Sankey(
+            arrangement="fixed",
+            node=dict(
+                label=nodes, pad=24, thickness=18,
+                line=dict(width=0),
+                x=node_x, y=node_y,
+                color=["#6b7280", "#6b7280", "#3b82f6", "#94a3b8",
+                      "#22c55e", "#f59e0b", "#ef4444"],
+            ),
+            link=dict(
+                source=[l[0] for l in links],
+                target=[l[1] for l in links],
+                value=[l[2] for l in links],
+            ),
+            textfont=dict(size=12),
+        ))
+        themed(fig, margin=dict(t=20, b=20, l=10, r=150), height=480)
+        st.plotly_chart(fig, width="stretch")
 
-            nodes = [
-                f"Detected ({total})",
-                f"Diagnosed ({diagnosed_n})",
-                f"Recovery Attempted ({attempted_n})",
-                f"Blocked / Escalated Immediately ({blocked_n})",
-                f"🟢 Recovered ({int(rec_mask.sum())})",
-                f"🟠 Escalated ({m['cases_escalated']})",
-                f"🔴 Stopped ({m['cases_stopped']})",
-            ]
-            raw_links = [
-                (0, 1, diagnosed_n),
-                (1, 2, attempted_n),
-                (1, 3, blocked_n),
-                (2, 4, int(rec_mask.sum())),
-                (2, 5, int(esc_att_mask.sum())),
-                (2, 6, int(stp_att_mask.sum())),
-                (3, 5, int(esc_imm_mask.sum())),
-                (3, 6, int(stp_imm_mask.sum())),
-            ]
-            links = [l for l in raw_links if l[2] > 0]
-            fig = go.Figure(go.Sankey(
-                node=dict(
-                    label=nodes, pad=18, thickness=16,
-                    color=["#6b7280", "#6b7280", "#3b82f6", "#94a3b8",
-                          "#22c55e", "#f59e0b", "#ef4444"],
-                ),
-                link=dict(
-                    source=[l[0] for l in links],
-                    target=[l[1] for l in links],
-                    value=[l[2] for l in links],
-                ),
-            ))
-            themed(fig, margin=dict(t=10, b=10, l=10, r=10), height=380)
-            st.plotly_chart(fig, width="stretch")
+    st.divider()
 
-    with col_cause:
-        st.subheader("Recovery by Root Cause")
-        rc_data = load_summary()["by_root_cause"]
-        if rc_data:
-            df_rc = pd.DataFrame(rc_data)
-            df_rc["root_cause_label"] = df_rc["root_cause"].apply(root_cause_label)
-            fig2 = px.bar(
-                df_rc.sort_values("amount_at_risk", ascending=True),
-                x="amount_at_risk", y="root_cause_label", orientation="h",
-                labels={"amount_at_risk": "Amount at risk (paise)", "root_cause_label": ""},
-                text=df_rc.sort_values("amount_at_risk", ascending=True)["recovery_rate_percent"]
-                    .apply(lambda v: f"{v:.0f}% recovered"),
-            )
-            fig2.update_traces(marker_color="#3b82f6")
-            fig2.update_xaxes(tickprefix="₹", tickformat=",.0f")
-            themed(fig2, margin=dict(t=10, b=10, l=10, r=10), height=380)
-            st.plotly_chart(fig2, width="stretch")
-        else:
-            st.info("No diagnosed cases yet.")
+    st.subheader("Recovery by Root Cause")
+    rc_data = load_summary()["by_root_cause"]
+    if rc_data:
+        df_rc = pd.DataFrame(rc_data)
+        df_rc["root_cause_label"] = df_rc["root_cause"].apply(root_cause_label)
+        fig2 = px.bar(
+            df_rc.sort_values("amount_at_risk", ascending=True),
+            x="amount_at_risk", y="root_cause_label", orientation="h",
+            labels={"amount_at_risk": "Amount at risk (paise)", "root_cause_label": ""},
+            text=df_rc.sort_values("amount_at_risk", ascending=True)["recovery_rate_percent"]
+                .apply(lambda v: f"{v:.0f}% recovered"),
+        )
+        fig2.update_traces(marker_color="#3b82f6")
+        fig2.update_xaxes(tickprefix="₹", tickformat=",.0f")
+        themed(fig2, margin=dict(t=10, b=10, l=10, r=10), height=380)
+        st.plotly_chart(fig2, width="stretch")
+    else:
+        st.info("No diagnosed cases yet.")
 
     st.divider()
     st.subheader("Live Activity Feed")
@@ -792,7 +803,7 @@ elif page == PAGES[3]:
                 st.rerun()
 
     else:
-        st.markdown("### Stage 1 — 🚀 Run Recovery Engine")
+        st.markdown("### Stage 1 — Run Recovery Engine")
         st.caption("Detects, diagnoses, selects the right intervention, checks all 10 policy rules, and executes.")
         run_disabled = (pending_new + pending_diag + pending_dispatch) == 0
         if st.button("🚀 Run Recovery Engine", type="primary", disabled=run_disabled):
@@ -893,7 +904,7 @@ elif page == PAGES[3]:
             st.info("Stage 1 complete. Scroll down to Stage 2 to simulate customer responses and close the loop.")
 
         st.divider()
-        st.markdown("### Stage 2 — 🎲 Simulate Customer Responses")
+        st.markdown("### Stage 2 — Simulate Customer Responses")
         st.caption("Simulates whether the customer paid, closing the loop and revealing final outcomes.")
 
         conn = get_connection()
@@ -956,7 +967,6 @@ elif page == PAGES[3]:
                 conn.close()
 
             clear_cache()
-            st.balloons()
             st.markdown("### ✅ Batch Complete")
             total_done = stats["recovered"] + stats["escalated"] + stats["stopped"]
             m2 = load_summary()["summary"]
@@ -1092,6 +1102,6 @@ elif page == PAGES[4]:
             color_discrete_map={"Allowed": "#22c55e", "Escalated": "#f59e0b",
                                 "Stopped": "#ef4444", "Waited": "#94a3b8"},
         )
-        themed(fig, margin=dict(t=10, b=10, l=10, r=10), height=320,
+        themed(fig, margin=dict(t=60, b=10, l=10, r=10), height=360,
               title="Policy check results (all 10-rule evaluations)")
         st.plotly_chart(fig, width="stretch")
