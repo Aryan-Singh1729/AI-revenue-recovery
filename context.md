@@ -469,3 +469,84 @@ All three suites green with canonical seed-30 numbers (`test_pipeline.py`,
 `test_e2e.py`, `test_api.py`), all 5 dashboard pages clean via
 `streamlit.testing.v1.AppTest`, zero occurrences of forbidden terminology
 anywhere in the tracked repo.
+
+## 17. Visual Theme Overhaul (Streamlit native theming)
+
+User feedback: the dashboard "looks very monotonous" — default Streamlit
+grey-on-grey. Compared NiceGUI/Dash as alternative frontends but explicitly
+chose zero risk: keep Streamlit, restyle it properly.
+
+**What changed** — `.streamlit/config.toml` (new file, no custom CSS/HTML):
+dark indigo/navy sidebar (`#1E1B4B`) against a light indigo-tinted content
+area, Manrope Google Font loaded natively, rounded bordered widgets
+(`baseRadius`, `showWidgetBorder`), a cohesive indigo/violet/teal/amber chart
+palette (`chartCategoricalColors`), locked to `base = "light"` so a judge's
+OS dark-mode setting can't produce a half-styled result. `dashboard/app.py`
+additions: a `themed()` helper applying transparent backgrounds to every
+Plotly chart so they sit flush inside the new card styling, and every metric
+row wrapped in `st.container(border=True)` (an official stable Streamlit
+API, not a hack).
+
+**Follow-up fix:** the initial `metricValueFontSize = "2.5rem"` /
+`metricValueFontWeight = 800` read as too large next to the rest of the
+page's text (flagged by the user against a screenshot) — reduced to
+`1.65rem` / `700`. Both changes are pure `config.toml` edits; zero
+`app.py` logic touched, so nothing about page behavior needed re-testing —
+only re-verified visually.
+
+Verified via a full `streamlit.testing.v1.AppTest` sweep (all 5 pages,
+filters, case-switching, the regenerate → Stage 1 → Stage 2 flow, Page 5's
+rule-jump navigation) both before and after, plus `test_e2e.py`/
+`test_pipeline.py` passing with canonical numbers restored afterward.
+
+## 18. Groq-Powered Live Reasoning (real LLM wired in)
+
+The LLM was never actually reachable in this environment — `.env` still
+carried the original `.env.example` placeholders (`LLM_BASE_URL=http://
+localhost:XXXX/v1`, `LLM_MODEL=gpt-5.6-sol` — a placeholder model name
+that never existed anywhere). User asked to wire up a real, free,
+open-weight model via Groq, and to make AI reasoning **visibly happen** in
+the dashboard instead of resolving instantly.
+
+**Provider switch** — `config.py`, `.env.example`: default endpoint changed
+to `https://api.groq.com/openai/v1`, default model `llama-3.3-70b-versatile`.
+`ai/llm.py`: added a 15s client timeout (fail fast to the deterministic
+fallback rather than hang the UI) and `response_format={"type":
+"json_object"}` on the diagnosis call (Groq's JSON mode, for reliable
+parsing). Every function's existing try/except fallback is untouched — the
+pipeline still never stalls on an AI failure, rate limit, or missing key.
+
+**`explain_intervention()` was dead code — now wired in.** It was fully
+implemented in `ai/llm.py` and documented as "used in the audit trail" since
+the original plan, but no call site ever invoked it. `dispatch_next_action()`
+(`engine/recovery_orchestrator.py`) now calls it for SMART_RETRY/
+PAYMENT_LINK actions (not DUNNING_MESSAGE, which already generates its own
+AI content — the message itself; not ESCALATION, which has clear
+deterministic reasoning) right before executing, and threads the result as
+a new `ai_explanation` field through `execute_action()` → `_execute_smart_
+retry()`/`_execute_payment_link()` (both gained an optional `ai_explanation`
+parameter, default `None`, zero risk to their one existing call site) into
+the `ACTION_EXECUTED` audit entry, and as a new top-level key on
+`dispatch_next_action()`'s and `resolve_outcome()`'s return dicts
+(`ai_explanations` list on the latter, since its retry loop can call
+`dispatch_next_action()` more than once).
+
+**Dashboard (Page 4) now visibly distinguishes AI reasoning from
+deterministic steps** instead of everything resolving instantly: each
+`diagnose()`/`dispatch_next_action()` call in the live log is wrapped in
+`st.spinner(...)`, and once AI genuinely produced text — a diagnosis
+reasoning sentence, an intervention explanation, a dunning message — it's
+shown in an `st.chat_message("assistant")` bubble, visually distinct from
+the plain system log lines. A page caption reports the active model live
+(`config.LLM_MODEL`) or an honest "AI unreachable" note, reusing the
+existing TCP-probe (`check_llm_reachable()`) rather than a new check. Page 3
+(Case Audit Trail) gained a matching callout for `action_executed` events
+that carry an `ai_explanation`, alongside the pre-existing one for dunning
+messages.
+
+Verified via `test_pipeline.py` + `test_e2e.py` (canonical 80/36/24/20, Rs
+82,464 recovered, 32.7% — unchanged) and a dedicated `streamlit.testing.v1.
+AppTest` sweep driving a full regenerate → Stage 1 → Stage 2 → Page 3 walk
+— all run with the LLM still unconfigured, deliberately the harder case
+(every single `ai.llm.*` call takes the fallback path; nothing may crash).
+Canonical data restored after.

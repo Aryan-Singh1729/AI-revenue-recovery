@@ -52,9 +52,12 @@ as real or simulated. To make it real:
 - `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` — a Razorpay **test mode** key
   pair. With these set, Payment Links and Orders are created via the real
   Razorpay API.
-- `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` — an OpenAI-compatible
-  endpoint (e.g. a local Kilo Code proxy). Without it, diagnosis and
-  messaging fall back to deterministic text.
+- `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` — any OpenAI-compatible
+  endpoint. Defaults to [Groq](https://console.groq.com) (`llama-3.3-70b-versatile`),
+  which has a free tier and hosts open-weight models fast enough that the
+  live dashboard's AI calls (Page 4) stay well under a second each. Without
+  a key, diagnosis, intervention explanations, and dunning messages all fall
+  back to deterministic text — the pipeline never stalls on an AI failure.
 
 ## Running it
 
@@ -102,8 +105,12 @@ Each page maps directly to a judging criterion. `streamlit run dashboard/app.py`
 4. **Live Recovery Engine** — the complete loop, live, in two visible steps:
    **Run Recovery Engine** (diagnose → select → 10-rule policy check →
    execute, logging each sub-step) and **Simulate Customer Responses**
-   (resolves the outcome, closing the loop). A gated **Regenerate demo
-   batch** control resets everything for a repeat run.
+   (resolves the outcome, closing the loop). Whenever a case actually needs
+   the LLM — an ambiguous error, an explanation for the chosen intervention,
+   a dunning message — the log shows a live spinner for that call, then the
+   model's own words in a chat bubble, so AI reasoning is visibly distinct
+   from the plain deterministic steps. A gated **Regenerate demo batch**
+   control resets everything for a repeat run.
 5. **Escalation & Stopping Rules** — all 10 rules with times-triggered and
    an example case each, the full escalation log with the context handed to
    the merchant, and a compliance summary (0 actions on fraud cases, 0
@@ -111,10 +118,13 @@ Each page maps directly to a judging criterion. `streamlit run dashboard/app.py`
 
 ## Demo script (5-7 minutes)
 
-The engine itself is fast — regenerating the batch and running both live
+Without a configured LLM, regenerating the batch and running both live
 stages together takes under two seconds end to end (measured, not
-estimated). The timing below is pacing for a live audience, not software
-latency.
+estimated) — every step is deterministic Python. With a real LLM key set
+(Groq, by default), Stage 1 takes a few seconds longer: each dispatched
+smart-retry/payment-link gets a genuine, visible AI call explaining the
+choice, and dunning messages are model-written, not templated. Either way,
+the timing below is pacing for a live audience, not a hard software limit.
 
 **0:00 – 0:45 — Open on Page 1.**
 "This is a recovery agent for Razorpay merchants. It's already processed 80
@@ -142,9 +152,12 @@ AI-generated dunning message, the outcome. "Every decision, explained."
 **4:00 – 5:30 — Live Recovery Engine (Page 4).**
 Regenerate a fresh batch. Click **Run Recovery Engine** — watch the live log:
 diagnosis, intervention selection, the 10-rule policy check, execution. Point
-out a fraud case getting blocked instantly and a disputed case getting
-stopped, not retried. Click **Simulate Customer Responses** — watch cases
-flip to terminal states live, the recovered counter tick up in real time.
+out the chat-bubble moments where the AI actually reasons — explaining why
+it chose a retry over a payment link, drafting a dunning message — versus
+the instant deterministic steps around them. Point out a fraud case getting
+blocked instantly and a disputed case getting stopped, not retried. Click
+**Simulate Customer Responses** — watch cases flip to terminal states live,
+the recovered counter tick up in real time.
 
 **5:30 – 6:30 — Stopping Rules (Page 5).**
 "It doesn't retry forever, doesn't spam opted-out customers, doesn't chase
