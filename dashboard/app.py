@@ -58,8 +58,14 @@ def _ensure_database_ready():
     the generator scripts first. Without this, the very first query in the
     sidebar below crashes every page with sqlite3.OperationalError: no such
     table, before a visitor ever gets a chance to click "Regenerate demo
-    batch." Create the schema if missing, and seed the canonical demo batch
-    if it's empty, so a brand-new deployment is never left crashed or blank.
+    batch." Create the schema if missing, seed the canonical demo batch if
+    it's empty, and run it through the full pipeline — a visitor who opens
+    the link cold (right after Streamlit Cloud recycles the container, which
+    wipes this same ephemeral filesystem) needs to see the real, finished
+    32.7%-recovery-rate result by default, not 50 blank "detected" cases
+    with no audit trail, which is what a seed-only bootstrap left behind.
+    "Regenerate demo batch" on Page 4 still resets to a fresh, unprocessed
+    batch on demand, for a live demo recording.
     @st.cache_resource makes this run exactly once per app process, not on
     every rerun/button click.
     """
@@ -73,8 +79,10 @@ def _ensure_database_ready():
     if count == 0:
         from data.generate_batch import generate_batch
         from data.seed_historical import seed_historical
+        from engine.recovery_orchestrator import process_batch
         generate_batch()
         seed_historical()
+        process_batch()
     return True
 
 
